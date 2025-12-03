@@ -52,9 +52,8 @@ void loop() {
 }
 
 /*
-Codigo para mostrar la orientacion (Heading, Pitch, Roll) y el estado de calibracion del sensor.
+Codigo para mostrar la orientacion (Heading, Pitch, Roll) y el estado de calibracion del sensor. El bno055 tien un sistema de calibracion automatica.
 La orientacion event.orientation.x/y/z son angulos de Euler en grados (el bno055 usa los 3 sensores que tiene).
-sys es un sistema de calibracion automatico del bno055 para la calibracion general del sistema. 
-gyro, accel y mag son la calibracion individual de cada sensor.
+sys es la calibracion general del sistema. gyro, accel y mag son la calibracion individual de cada sensor.
 Cada uno va de 0 (sin calibrar) a 3 (totalmente calibrado).
 *\
