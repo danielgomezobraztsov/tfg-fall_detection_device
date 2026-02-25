@@ -188,4 +188,28 @@ Ejemplo de código en el repositorio del proyecto, hechos con la ayuda de este r
 (https://github.com/arduino-libraries/BNO055?tab=readme-ov-file).
 
 ---
-tp4056 module + batería?? maybe
+
+### Circuito de carga 
+
+**TC4056A + 3.7 Li-Po Battery 500 mAh + Voltage Booster**
+
+![alt text](imgs/charge.png)
+
+Union de el modulo de carga y un step-up voltage booster.
+
+- La bateria elegida es una Li-Po de 3.7V 500mAh.
+- El modulo de carga es el TP4056 usb-c.
+- El voltage booster es uno generico a 5V (DM13).
+
+La conexion entre los componentes es la vista en la imagen.
+
+| DEL PIN:       | AL PIN:                 |
+| -------------- | ----------------------- |
+| BAT+           | TP4056 BAT+             |
+| BAT-           | TP4056 BAT-             |
+| TP4056 OUT+    | BOOST Vin+              |
+| TP4056 OUT-    | BOOST Vin-              |
+| BOOST Vout+    | ARDUINO Vin             |
+| BOOST Vout-    | ARDUINO GND             |
+
+Esto convierte la carga de la bateria de 3.7V a una carga de 5V que puede encender el arduino desde su pin VIN.
