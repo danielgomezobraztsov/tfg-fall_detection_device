@@ -144,6 +144,18 @@ puedan dañar los componentes.
 Puede ser útil en momentos en los que se quiera que se recupere de algún error o
 problema desde el Arduino. Su conexión no es necesaria, pero si puede ser útil.
 
+## QWIIC / STEMMA QT CONNECTOR
+En mi caso voy a usar el conector que tiene mi BNO055 de STEMMA QT/QWIIC que me permite tener un perfil mas bajo y ser mas comodo de montar.
+![alt text](imgs/qwiic.png)
+
+Las conexiones son:
+| BNO QWIIC     | ARDUINO                  |
+| ------------- | ------------------------ |
+| VCC / VIN (RED)| 3.3V                     |
+| GND (BLACK)   | GND                      |
+| SDA (BLUE)    | A4                       |
+| SCL (YELLOW)  | A5                       |
+
 ## ELECCIÓN DE COMPONENTES
 
 Para el microcontrolador he elegido el Arduino Nano ESP32. Este microcontrolador de Arduino
