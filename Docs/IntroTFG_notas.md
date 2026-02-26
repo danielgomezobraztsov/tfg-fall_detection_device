@@ -146,6 +146,7 @@ problema desde el Arduino. Su conexión no es necesaria, pero si puede ser útil
 
 ## QWIIC / STEMMA QT CONNECTOR
 En mi caso voy a usar el conector que tiene mi BNO055 de STEMMA QT/QWIIC que me permite tener un perfil mas bajo y ser mas comodo de montar.
+
 ![alt text](imgs/qwiic.png)
 
 Las conexiones son:
