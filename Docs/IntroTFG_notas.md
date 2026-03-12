@@ -266,13 +266,23 @@ $$
 
 - **Freefall?**
 
+Accelerometro
+
 - **Impacto?**
+
+Accelerometro
 
 - **Alta Velocidad Angular?**
 
+Gyroscopio
+
 - **Cambio de postura?**
 
+Euler
+
 - **Incatividad?**
+
+Tiempos
 
 **CAIDA!!!**
 
