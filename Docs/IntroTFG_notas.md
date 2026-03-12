@@ -226,3 +226,62 @@ La conexion entre los componentes es la vista en la imagen.
 | BOOST Vout-    | ARDUINO GND             |
 
 Esto convierte la carga de la bateria de 3.7V a una carga de 5V que puede encender el arduino desde su pin VIN.
+
+
+----
+----
+
+## ALGORITMO
+
+### QUE ES UNA CAIDA
+
+Una caida no es un solo evento independiente, si no que se puede dividir en varias fases biomecanicas. En una situcion/modelo simplificado, las fases se pueden describir como una perdida de soporte (ya sea de el suelo o una silla) seqguida por una rapida rotacion del cuerpo, seguida por un impacto, ya sea con el suelo o otra superficie, seguida finalmente con un cambio de postura con la inicial cuando se empezo a detectar la caida libre? (freefall), normalmenrte horizontal (acabas tumbado) y una reduccion del movimiento.
+
+---
+### QUE MIDEN LOS SENSORES
+
+**Accelerometro**
+
+El accelerometro mide una aceleracion lineal, se puede definir con:
+
+$$
+a(t) = \begin{pmatrix} a_x \\ a_y \\ a_z \end{pmatrix}
+$$
+
+Y se usa la magnitud escalar:
+
+$$
+\| \mathbf{a}(t) \| = \sqrt{ a_x^2(t) + a_y^2(t) + a_z^2(t) }.
+$$
+
+
+
+**Gyroscopio**
+
+**Euler/Orientacion**
+
+
+---
+### FASES DE LA CAIDA
+
+- **Freefall?**
+
+- **Impacto?**
+
+- **Alta Velocidad Angular?**
+
+- **Cambio de postura?**
+
+- **Incatividad?**
+
+**CAIDA!!!**
+
+---
+### FALL ENERGY (UNIFICACION)
+
+
+---
+### PARAMETROS
+
+---
+### STUDIES/FUENTES
