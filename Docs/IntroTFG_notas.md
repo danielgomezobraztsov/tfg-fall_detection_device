@@ -248,12 +248,15 @@ $$
 a(t) = \begin{pmatrix} a_x \\ a_y \\ a_z \end{pmatrix}
 $$
 
+Esto ya incluye la celeracion gravitacional de ~9.8 m/s².
+
 Y se usa la magnitud escalar:
 
 $$
 \| \mathbf{a}(t) \| = \sqrt{ a_x^2(t) + a_y^2(t) + a_z^2(t) }.
 $$
 
+Esta es util porque es idenpendiente de la orientacion
 
 
 **Gyroscopio**
