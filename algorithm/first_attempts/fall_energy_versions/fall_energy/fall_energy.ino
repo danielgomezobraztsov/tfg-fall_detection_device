@@ -8,8 +8,8 @@
 #include <Adafruit_BNO055.h>
 #include <utility/imumaths.h>
 
-const char* ssid     = "MOVISTAR_5148";
-const char* password = "BTn7GpY2Cfj4wzs9LmqK";
+const char* ssid     = "";
+const char* password = "";
 WebServer server(80);
 WebSocketsServer webSocket = WebSocketsServer(81);
 
