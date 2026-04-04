@@ -242,6 +242,7 @@ Una caida no es un solo evento independiente, si no que se puede dividir en vari
 
 **Accelerometro**
 
+El accelerometro no mide movimiento de forma directa, mide una fuerza especifica, la fuerza del soporte mecanico por unidad de masa que actua en el sensor. Por esto el sensor cuando esta estacionario lee 1g aunque no haya movimiento. Por esto en caida libre "idonea" el sensor lee ~0g.
 El accelerometro mide una aceleracion lineal, se puede definir con:
 
 $$
@@ -253,13 +254,22 @@ Esto ya incluye la celeracion gravitacional de ~9.8 m/s².
 Y se usa la magnitud escalar:
 
 $$
-\| \mathbf{a}(t) \| = \sqrt{ a_x^2(t) + a_y^2(t) + a_z^2(t) }.
+ A  = \sqrt{ a_x^2(t) + a_y^2(t) + a_z^2(t) }.
 $$
 
-Esta es util porque es idenpendiente de la orientacion
+Esta es util porque es idenpendiente de la orientacion y refleja si el sensor tiene apoyo, si se ha empujado, o si se ha parado. En una caida es util porque hay un pequeño instante en el que se pirde apoyo, seguido de un impacto. Esto lo mide perfectamente un accelerometero.
 
 
 **Gyroscopio**
+
+El giroscopio mide una velocidad angular:
+
+$$
+ \Omega = \sqrt{ a_x^2(t) + a_y^2(t) + a_z^2(t) }.
+
+$$
+
+Esto nos dice cuan rapido la parte del cuerpo que lleva el giroscopio esta rotando. Esto es importante porque una caida no suele ser una caida perfectamente vertical. Normalmente suele haber un cabeceo y balanceo (o ambos) cuando el centro de masa pierde soporte. Un sensor de caidas con un giroscopio es muy util porque muchas actividades del dia a dia pueden dar muchos golpes rapidos de aceleracion (como saltos), pero casi ninguna actividad da lugar a un giro del centro de masa de la persona, los que si son comunes en caidas.
 
 **Euler/Orientacion**
 
