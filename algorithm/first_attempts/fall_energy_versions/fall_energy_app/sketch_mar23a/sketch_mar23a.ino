@@ -123,5 +123,5 @@ void loop() {
   sendMessage("debug", debugMsg);
 
   
-  delay(200); // slower update rate so the app is easier to read
+  delay(200); 
 }
