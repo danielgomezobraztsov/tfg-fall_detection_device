@@ -265,6 +265,7 @@ Esta es util porque es idenpendiente de la orientacion y refleja si el sensor ti
 El giroscopio mide una velocidad angular:
 
 $$
+
  \Omega = \sqrt{ a_x^2(t) + a_y^2(t) + a_z^2(t) }.
 
 $$
