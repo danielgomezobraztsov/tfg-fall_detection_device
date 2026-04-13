@@ -274,31 +274,36 @@ Esto nos dice cuan rapido la parte del cuerpo que lleva el giroscopio esta rotan
 
 **Euler/Orientacion**
 
+La orientacion normalmente se representa con alabeo, cabeceo y guiñada (roll, pitch and yaw, en español me suena raro. Es terminologia tipica en aviones). Para la deteccion de caidas lo que es mas importante es el pitch y el roll porque ayudan a saber si la posicion del cuerpo ya no es la de estar de pie o sentado. Es muy util en general despues de una situacion dinamica (mucho movimento) para saber si la persona esta tumbada o en una postura muy "comprometida". 
+
+De por si sola, estas medidas no son sufientes para estimar una caida al no ser fiables cuando hay un impacto/moviento violento o agresivo. Hay que comprobarlas despues de un momento que parezaca una caida, no durante. Esto se hace comprobando antes de que haya una situacion que parezca una caida y compararlo con el despues.
 
 ---
 ### FASES DE LA CAIDA
 
-- **Freefall?**
+<u>**Freefall?**</u>
 
-Accelerometro
+**Accelerometro**
 
-- **Impacto?**
 
-Accelerometro
 
-- **Alta Velocidad Angular?**
+<u>**Impacto?**</u>
 
-Gyroscopio
+**Accelerometro**
 
-- **Cambio de postura?**
+<u>**Alta Velocidad Angular?**</u>
 
-Euler
+**Gyroscopio**
 
-- **Incatividad?**
+<u>**Cambio de postura?**</u>
 
-Tiempos
+**Euler**
 
-**CAIDA!!!**
+<u>**Incatividad?**</u>
+
+**Tiempos**
+
+<u>**CAIDA!!!**</u>
 
 ---
 ### FALL ENERGY (UNIFICACION)
@@ -309,3 +314,27 @@ Tiempos
 
 ---
 ### STUDIES/FUENTES
+https://www.sciencedirect.com/science/article/abs/pii/S1959031808001243
+
+https://research.universityofgalway.ie/en/publications/a-proposal-for-the-classification-and-evaluation-of-fall-detector-8/
+
+https://pubmed.ncbi.nlm.nih.gov/17222579/
+
+https://pubmed.ncbi.nlm.nih.gov/19153043/
+
+https://www.sciencedirect.com/science/article/abs/pii/S096663620800026X
+
+https://pubmed.ncbi.nlm.nih.gov/23083889/
+
+https://karger.com/ger/article-abstract/61/1/61/147799/Sensitivity-and-False-Alarm-Rate-of-a-Fall-Sensor
+
+https://zaguan.unizar.es/record/48442/files/texto_completo.pdf
+
+https://scispace.com/papers/a-proposal-for-the-classification-and-evaluation-of-fall-lacwp7ak08
+
+-----------
+-----------
+
+## INFORMATION FLOW
+
+![information_flow](imgs/info_flow.png)
