@@ -265,9 +265,7 @@ Esta es util porque es idenpendiente de la orientacion y refleja si el sensor ti
 El giroscopio mide una velocidad angular:
 
 $$
-
  \Omega = \sqrt{ a_x^2(t) + a_y^2(t) + a_z^2(t) }.
-
 $$
 
 Esto nos dice cuan rapido la parte del cuerpo que lleva el giroscopio esta rotando. Esto es importante porque una caida no suele ser una caida perfectamente vertical. Normalmente suele haber un cabeceo y balanceo (o ambos) cuando el centro de masa pierde soporte. Un sensor de caidas con un giroscopio es muy util porque muchas actividades del dia a dia pueden dar muchos golpes rapidos de aceleracion (como saltos), pero casi ninguna actividad da lugar a un giro del centro de masa de la persona, los que si son comunes en caidas.
