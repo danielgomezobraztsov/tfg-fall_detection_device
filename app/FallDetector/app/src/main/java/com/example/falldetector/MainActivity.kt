@@ -524,7 +524,7 @@ fun AddEmergencyContactScreen(
                         },
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Guardar")
+                        Text("Guardareeewewewewfdgvfd")
                     }
                 }
             }
