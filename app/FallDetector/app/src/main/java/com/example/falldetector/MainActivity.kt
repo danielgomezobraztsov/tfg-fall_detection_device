@@ -1,52 +1,48 @@
 package com.example.falldetector
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Bundle
-import android.telephony.SmsManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import okhttp3.*
-import okio.ByteString
-import org.json.JSONArray
-import org.json.JSONObject
-
-data class EmergencyContact(
-    val name: String,
-    val phone: String
-)
+import androidx.core.content.ContextCompat
+import androidx.core.content.ContextCompat.startForegroundService
 
 enum class AppScreen {
     Main,
     EmergencyContacts,
-    AddEmergencyContact
+    AddEmergencyContact,
+    DeviceSetup
 }
 
 class MainActivity : ComponentActivity() {
 
-    private val client = OkHttpClient()
-    private var webSocket: WebSocket? = null
-
     private var hasSmsPermission by mutableStateOf(false)
     private var hasCallPermission by mutableStateOf(false)
+    private var hasNotificationPermission by mutableStateOf(false)
+
+    private var logReceiver: BroadcastReceiver? = null
+    private var fallReceiver: BroadcastReceiver? = null
+    private var countdownReceiver: BroadcastReceiver? = null
+    private var alertFinishedReceiver: BroadcastReceiver? = null
 
     private val permissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
-            hasSmsPermission = permissions[Manifest.permission.SEND_SMS] == true
-            hasCallPermission = permissions[Manifest.permission.CALL_PHONE] == true
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            refreshPermissionState()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -55,292 +51,238 @@ class MainActivity : ComponentActivity() {
         refreshPermissionState()
 
         setContent {
-            var currentScreen by remember { mutableStateOf(AppScreen.Main) }
-
-            var ipAddress by remember { mutableStateOf("192.168.1.100") }
             val logs = remember { mutableStateListOf<String>() }
 
+            var currentScreenName by rememberSaveable {
+                mutableStateOf(AppScreen.Main.name)
+            }
+
+            val currentScreen = AppScreen.valueOf(currentScreenName)
+
+            var ipAddress by rememberSaveable {
+                mutableStateOf(DeviceConfigStorage.loadDeviceIp(this))
+            }
+
             var contacts by remember {
-                mutableStateOf(loadEmergencyContacts())
+                mutableStateOf(EmergencyContactStorage.load(this))
             }
 
-            var showFallAlert by remember { mutableStateOf(false) }
-            var emergencyAlreadyTriggered by remember { mutableStateOf(false) }
-
-            fun addLog(message: String) {
-                logs.add(0, message)
+            var showFallAlert by rememberSaveable {
+                mutableStateOf(false)
             }
 
-            fun requestEmergencyPermissions() {
-                permissionLauncher.launch(
-                    arrayOf(
-                        Manifest.permission.SEND_SMS,
-                        Manifest.permission.CALL_PHONE
-                    )
+            var secondsRemaining by rememberSaveable {
+                mutableStateOf(15)
+            }
+
+            DisposableEffect(Unit) {
+                registerReceivers(
+                    addLog = { message ->
+                        logs.add(0, message)
+                    },
+                    onFallAlert = {
+                        showFallAlert = true
+                    },
+                    onCountdown = { seconds ->
+                        secondsRemaining = seconds
+                        showFallAlert = true
+                    },
+                    onAlertFinished = {
+                        showFallAlert = false
+                        secondsRemaining = 15
+                    }
                 )
-            }
 
-            fun sendEmergencyActions() {
-                if (emergencyAlreadyTriggered) return
-
-                emergencyAlreadyTriggered = true
-
-                if (contacts.isEmpty()) {
-                    addLog("No emergency contacts available")
-                    return
+                onDispose {
+                    unregisterReceivers()
                 }
-
-                if (!hasSmsPermission || !hasCallPermission) {
-                    addLog("Emergency permissions missing")
-                    requestEmergencyPermissions()
-                    return
-                }
-
-                sendEmergencySmsToContacts(contacts, ::addLog)
-                callFirstEmergencyContact(contacts, ::addLog)
             }
 
             FallDetectorApp(
                 currentScreen = currentScreen,
-                onScreenChange = { currentScreen = it },
+                onScreenChange = {
+                    currentScreenName = it.name
+                },
 
                 ipAddress = ipAddress,
-                onIpAddressChange = { ipAddress = it },
+                onIpAddressChange = {
+                    ipAddress = it
+                    DeviceConfigStorage.saveDeviceIp(this, it)
+                },
 
                 logs = logs,
-                addLog = ::addLog,
 
                 contacts = contacts,
                 onAddContact = { contact ->
                     contacts = contacts + contact
-                    saveEmergencyContacts(contacts)
-                    addLog("Added emergency contact: ${contact.name}")
+                    EmergencyContactStorage.save(this, contacts)
+                    logs.add(0, "Contacto added: ${contact.name}")
                 },
                 onDeleteContact = { contact ->
                     contacts = contacts.filterNot { it == contact }
-                    saveEmergencyContacts(contacts)
-                    addLog("Deleted emergency contact: ${contact.name}")
+                    EmergencyContactStorage.save(this, contacts)
+                    logs.add(0, "Contacto borrado: ${contact.name}")
                 },
 
                 hasSmsPermission = hasSmsPermission,
                 hasCallPermission = hasCallPermission,
-                onRequestPermissions = { requestEmergencyPermissions() },
-
-                showFallAlert = showFallAlert,
-                onShowFallAlertChange = { showFallAlert = it },
+                hasNotificationPermission = hasNotificationPermission,
+                onRequestPermissions = {
+                    requestPermissions()
+                },
 
                 onConnect = {
-                    connectToEsp32(
-                        ip = ipAddress,
-                        addLog = ::addLog,
-                        onFallDetected = {
-                            showFallAlert = true
-                            emergencyAlreadyTriggered = false
-                        }
-                    )
+                    DeviceConfigStorage.saveDeviceIp(this, ipAddress)
+                    DeviceConfigStorage.setAutoConnect(this, true)
+                    startMonitoringService(ipAddress)
+                    logs.add(0, "Start monitoring requested")
                 },
                 onDisconnect = {
-                    disconnect(::addLog)
+                    DeviceConfigStorage.setAutoConnect(this, false)
+                    stopMonitoringService()
+                    logs.add(0, "Stop monitoring requested")
                 },
 
-                onEmergencyCountdownFinished = {
-                    showFallAlert = false
-                    sendEmergencyActions()
-                },
-
+                showFallAlert = showFallAlert,
+                secondsRemaining = secondsRemaining,
                 onFalseAlarm = {
                     showFallAlert = false
-                    emergencyAlreadyTriggered = false
-                    addLog("Caida falsa (por user)")
+                    secondsRemaining = 15
+                    cancelFallAlert()
+                    logs.add(0, "False alarm enviada al servicio")
                 }
             )
         }
     }
 
+    private fun requestPermissions() {
+        permissionLauncher.launch(
+            arrayOf(
+                Manifest.permission.SEND_SMS,
+                Manifest.permission.CALL_PHONE,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        )
+    }
+
     private fun refreshPermissionState() {
         hasSmsPermission =
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.SEND_SMS
-            ) == PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) ==
+                    PackageManager.PERMISSION_GRANTED
 
         hasCallPermission =
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.CALL_PHONE
-            ) == PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) ==
+                    PackageManager.PERMISSION_GRANTED
+
+        hasNotificationPermission =
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+                    PackageManager.PERMISSION_GRANTED
     }
 
-    private fun loadEmergencyContacts(): List<EmergencyContact> {
-        val prefs = getSharedPreferences("emergency_contacts", Context.MODE_PRIVATE)
-        val jsonString = prefs.getString("contacts", "[]") ?: "[]"
-
-        return try {
-            val array = JSONArray(jsonString)
-            val result = mutableListOf<EmergencyContact>()
-
-            for (i in 0 until array.length()) {
-                val item = array.getJSONObject(i)
-
-                val name = item.optString("name")
-                val phone = item.optString("phone")
-
-                if (name.isNotBlank() && phone.isNotBlank()) {
-                    result.add(EmergencyContact(name = name, phone = phone))
-                }
-            }
-
-            result
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
-
-    private fun saveEmergencyContacts(contacts: List<EmergencyContact>) {
-        val array = JSONArray()
-
-        contacts.forEach { contact ->
-            val item = JSONObject()
-            item.put("name", contact.name)
-            item.put("phone", contact.phone)
-            array.put(item)
+    private fun startMonitoringService(ip: String) {
+        val intent = Intent(this, FallDetectionService::class.java).apply {
+            action = FallDetectionService.ACTION_CONNECT
+            putExtra(FallDetectionService.EXTRA_IP, ip)
         }
 
-        getSharedPreferences("emergency_contacts", Context.MODE_PRIVATE).edit().putString("contacts", array.toString()).apply()
+        startForegroundService(this, intent)
     }
 
-    private fun connectToEsp32(
-        ip: String,
+    private fun stopMonitoringService() {
+        val intent = Intent(this, FallDetectionService::class.java).apply {
+            action = FallDetectionService.ACTION_DISCONNECT
+        }
+
+        startService(intent)
+    }
+
+    private fun cancelFallAlert() {
+        val intent = Intent(this, FallDetectionService::class.java).apply {
+            action = FallDetectionService.ACTION_CANCEL_ALERT
+        }
+
+        startService(intent)
+    }
+
+    private fun registerReceivers(
         addLog: (String) -> Unit,
-        onFallDetected: () -> Unit
+        onFallAlert: () -> Unit,
+        onCountdown: (Int) -> Unit,
+        onAlertFinished: () -> Unit
     ) {
-        webSocket?.close(1000, "Reconnecting")
+        logReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val message =
+                    intent?.getStringExtra(FallDetectionService.EXTRA_MESSAGE)
+                        ?: return
 
-        val request = Request.Builder()
-            .url("ws://$ip:81/")
-            .build()
-
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                runOnUiThread {
-                    addLog("Connected to $ip")
-                }
+                addLog(message)
             }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                runOnUiThread {
-                    try {
-                        val json = JSONObject(text)
-                        val type = json.optString("type", "msg")
-                        val message = json.optString("message", text)
-
-                        addLog("[$type] $message")
-
-                        if (
-                            type.equals("fall", ignoreCase = true) ||
-                            message.contains("FALL DETECTED", ignoreCase = true)
-                        ) {
-                            onFallDetected()
-                        }
-
-                    } catch (e: Exception) {
-                        addLog(text)
-
-                        if (text.contains("FALL DETECTED", ignoreCase = true)) {
-                            onFallDetected()
-                        }
-                    }
-                }
-            }
-
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                runOnUiThread {
-                    addLog("Binary message received")
-                }
-            }
-
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                runOnUiThread {
-                    addLog("Closing connection: $reason")
-                }
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                runOnUiThread {
-                    addLog("Disconnected")
-                }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                runOnUiThread {
-                    addLog("Connection error: ${t.message}")
-                }
-            }
-        })
-    }
-
-    private fun disconnect(addLog: (String) -> Unit) {
-        webSocket?.close(1000, "User disconnected")
-        webSocket = null
-        addLog("Disconnected by user")
-    }
-
-    private fun sendEmergencySmsToContacts(
-        contacts: List<EmergencyContact>,
-        addLog: (String) -> Unit
-    ) {
-        val message =
-            "Caida detectada!! (mensaje automatico de la app)"
-
-        try {
-            val smsManager = SmsManager.getDefault()
-
-            contacts.forEach { contact ->
-                smsManager.sendTextMessage(
-                    contact.phone,
-                    null,
-                    message,
-                    null,
-                    null
-                )
-
-                addLog("SMS a: ${contact.name}")
-            }
-
-        } catch (e: Exception) {
-            addLog("SMS error: ${e.message}")
-        }
-    }
-
-    private fun callFirstEmergencyContact(
-        contacts: List<EmergencyContact>,
-        addLog: (String) -> Unit
-    ) {
-        val firstContact = contacts.firstOrNull()
-
-        if (firstContact == null) {
-            addLog("No hay contactos a llamar")
-            return
         }
 
-        try {
-            val intent = Intent(Intent.ACTION_CALL).apply {
-                data = Uri.parse("tel:${firstContact.phone}")
+        fallReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                onFallAlert()
             }
-
-            startActivity(intent)
-            addLog("Llamando a ${firstContact.name}")
-
-        } catch (e: Exception) {
-            addLog("Error: ${e.message}")
         }
+
+        countdownReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val seconds =
+                    intent?.getIntExtra(
+                        FallDetectionService.EXTRA_SECONDS_REMAINING,
+                        15
+                    ) ?: 15
+
+                onCountdown(seconds)
+            }
+        }
+
+        alertFinishedReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                onAlertFinished()
+            }
+        }
+
+        ContextCompat.registerReceiver(
+            this,
+            logReceiver,
+            IntentFilter(FallDetectionService.BROADCAST_LOG),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+
+        ContextCompat.registerReceiver(
+            this,
+            fallReceiver,
+            IntentFilter(FallDetectionService.BROADCAST_FALL_ALERT),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+
+        ContextCompat.registerReceiver(
+            this,
+            countdownReceiver,
+            IntentFilter(FallDetectionService.BROADCAST_ALERT_COUNTDOWN),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+
+        ContextCompat.registerReceiver(
+            this,
+            alertFinishedReceiver,
+            IntentFilter(FallDetectionService.BROADCAST_ALERT_FINISHED),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
-    override fun onDestroy() {
-        webSocket?.close(1000, "App closed")
-        client.dispatcher.executorService.shutdown()
-        super.onDestroy()
+    private fun unregisterReceivers() {
+        logReceiver?.let { unregisterReceiver(it) }
+        fallReceiver?.let { unregisterReceiver(it) }
+        countdownReceiver?.let { unregisterReceiver(it) }
+        alertFinishedReceiver?.let { unregisterReceiver(it) }
+
+        logReceiver = null
+        fallReceiver = null
+        countdownReceiver = null
+        alertFinishedReceiver = null
     }
 }
 
@@ -353,7 +295,6 @@ fun FallDetectorApp(
     onIpAddressChange: (String) -> Unit,
 
     logs: List<String>,
-    addLog: (String) -> Unit,
 
     contacts: List<EmergencyContact>,
     onAddContact: (EmergencyContact) -> Unit,
@@ -361,34 +302,37 @@ fun FallDetectorApp(
 
     hasSmsPermission: Boolean,
     hasCallPermission: Boolean,
+    hasNotificationPermission: Boolean,
     onRequestPermissions: () -> Unit,
-
-    showFallAlert: Boolean,
-    onShowFallAlertChange: (Boolean) -> Unit,
 
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
 
-    onEmergencyCountdownFinished: () -> Unit,
+    showFallAlert: Boolean,
+    secondsRemaining: Int,
     onFalseAlarm: () -> Unit
 ) {
     MaterialTheme {
         when (currentScreen) {
-            AppScreen.Main -> FallDetectorScreen(
+            AppScreen.Main -> MainScreen(
                 ipAddress = ipAddress,
                 onIpAddressChange = onIpAddressChange,
                 logs = logs,
                 contacts = contacts,
                 hasSmsPermission = hasSmsPermission,
                 hasCallPermission = hasCallPermission,
+                hasNotificationPermission = hasNotificationPermission,
                 onRequestPermissions = onRequestPermissions,
+                onConnect = onConnect,
+                onDisconnect = onDisconnect,
                 onOpenContacts = {
                     onScreenChange(AppScreen.EmergencyContacts)
                 },
-                onConnect = onConnect,
-                onDisconnect = onDisconnect,
+                onOpenSetup = {
+                    onScreenChange(AppScreen.DeviceSetup)
+                },
                 showFallAlert = showFallAlert,
-                onEmergencyCountdownFinished = onEmergencyCountdownFinished,
+                secondsRemaining = secondsRemaining,
                 onFalseAlarm = onFalseAlarm
             )
 
@@ -412,12 +356,18 @@ fun FallDetectorApp(
                     onScreenChange(AppScreen.EmergencyContacts)
                 }
             )
+
+            AppScreen.DeviceSetup -> DeviceSetupScreen(
+                onBack = {
+                    onScreenChange(AppScreen.Main)
+                }
+            )
         }
     }
 }
 
 @Composable
-fun FallDetectorScreen(
+fun MainScreen(
     ipAddress: String,
     onIpAddressChange: (String) -> Unit,
 
@@ -426,26 +376,37 @@ fun FallDetectorScreen(
 
     hasSmsPermission: Boolean,
     hasCallPermission: Boolean,
+    hasNotificationPermission: Boolean,
     onRequestPermissions: () -> Unit,
 
-    onOpenContacts: () -> Unit,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
 
+    onOpenContacts: () -> Unit,
+    onOpenSetup: () -> Unit,
+
     showFallAlert: Boolean,
-    onEmergencyCountdownFinished: () -> Unit,
+    secondsRemaining: Int,
     onFalseAlarm: () -> Unit
 ) {
     Surface(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.fillMaxSize()) {
-
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
-                    text = "ESP32 Fall Detector",
+                    text = "DETECTOR DE CAIDAS",
                     style = MaterialTheme.typography.headlineSmall
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
+
+                Button(
+                    onClick = onOpenSetup,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Setup")
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
 
                 Button(
                     onClick = onOpenContacts,
@@ -454,20 +415,20 @@ fun FallDetectorScreen(
                     Text("Emergency Contacts (${contacts.size})")
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-                if (!hasSmsPermission || !hasCallPermission) {
+                if (!hasSmsPermission || !hasCallPermission || !hasNotificationPermission) {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Text(
-                                text = "Hacen falta permisos",
+                                text = "Hacen falta permisos!!",
                                 style = MaterialTheme.typography.titleSmall
                             )
 
                             Spacer(modifier = Modifier.height(4.dp))
 
                             Text(
-                                text = "Hacen falta permisos de llamadas y SMS para avisar"
+                                text = "Se necesitan permisos de llamada, SMS y notificaciones."
                             )
 
                             Spacer(modifier = Modifier.height(8.dp))
@@ -484,7 +445,7 @@ fun FallDetectorScreen(
                 OutlinedTextField(
                     value = ipAddress,
                     onValueChange = onIpAddressChange,
-                    label = { Text("ESP32 IP Address") },
+                    label = { Text("Arduino IP Address") },
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -495,7 +456,7 @@ fun FallDetectorScreen(
                         onClick = onConnect,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Connect")
+                        Text("Empezar")
                     }
 
                     Spacer(modifier = Modifier.width(8.dp))
@@ -504,14 +465,14 @@ fun FallDetectorScreen(
                         onClick = onDisconnect,
                         modifier = Modifier.weight(1f)
                     ) {
-                        Text("Disconnect")
+                        Text("Parar")
                     }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
                 Text(
-                    text = "Messages",
+                    text = "Mensajes",
                     style = MaterialTheme.typography.titleMedium
                 )
 
@@ -534,77 +495,43 @@ fun FallDetectorScreen(
             }
 
             if (showFallAlert) {
-                FallDetectedDialog(
-                    contacts = contacts,
-                    onFalseAlarm = onFalseAlarm,
-                    onCountdownFinished = onEmergencyCountdownFinished
+                AlertDialog(
+                    onDismissRequest = { },
+                    title = {
+                        Text(
+                            text = "FALL DETECTED",
+                            fontSize = 28.sp
+                        )
+                    },
+                    text = {
+                        Column {
+                            Text("Acciones de emergencia en $secondsRemaining s.")
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            if (contacts.isEmpty()) {
+                                Text("No hay contactos.")
+                            } else {
+                                Text("Contactos a notificar:")
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                contacts.forEach { contact ->
+                                    Text("${contact.name}: ${contact.phone}")
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(onClick = onFalseAlarm) {
+                            Text("False alarm")
+                        }
+                    }
                 )
             }
         }
     }
 }
-
-@Composable
-fun FallDetectedDialog(
-    contacts: List<EmergencyContact>,
-    onFalseAlarm: () -> Unit,
-    onCountdownFinished: () -> Unit
-) {
-    var secondsRemaining by remember { mutableStateOf(15) }
-    var active by remember { mutableStateOf(true) }
-
-    LaunchedEffect(active) {
-        while (active && secondsRemaining > 0) {
-            kotlinx.coroutines.delay(1000)
-            secondsRemaining--
-        }
-
-        if (active && secondsRemaining == 0) {
-            active = false
-            onCountdownFinished()
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = { },
-        title = {
-            Text(
-                text = "FALL DETECTED",
-                fontSize = 28.sp
-            )
-        },
-        text = {
-            Column {
-                Text("AVISOS EN $secondsRemaining SEGUNDOS.")
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                if (contacts.isEmpty()) {
-                    Text("No emergency contacts have been added yet.")
-                } else {
-                    Text("Contacts a avisar:")
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    contacts.forEach { contact ->
-                        Text("${contact.name}: ${contact.phone}")
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    active = false
-                    onFalseAlarm()
-                }
-            ) {
-                Text("False alarm")
-            }
-        }
-    )
-}
-
 @Composable
 fun EmergencyContactsScreen(
     contacts: List<EmergencyContact>,
@@ -615,7 +542,7 @@ fun EmergencyContactsScreen(
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
-                text = "Contactos",
+                text = "Contactos de emergencia",
                 style = MaterialTheme.typography.headlineSmall
             )
 
@@ -645,14 +572,14 @@ fun EmergencyContactsScreen(
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            text = "Sin contactos (de momento)",
+                            text = "No hay contactos",
                             style = MaterialTheme.typography.titleMedium
                         )
 
                         Spacer(modifier = Modifier.height(4.dp))
 
                         Text(
-                            text = "Click para añadir contactos de emergencia."
+                            text = "Tap para meter contactos a notificar en caso de caida"
                         )
                     }
                 }
@@ -679,7 +606,7 @@ fun EmergencyContactsScreen(
                                 OutlinedButton(
                                     onClick = { onDeleteContact(contact) }
                                 ) {
-                                    Text("Borrar")
+                                    Text("Delete")
                                 }
                             }
                         }
@@ -695,9 +622,9 @@ fun AddEmergencyContactScreen(
     onBack: () -> Unit,
     onSaveContact: (EmergencyContact) -> Unit
 ) {
-    var name by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var name by rememberSaveable { mutableStateOf("") }
+    var phone by rememberSaveable { mutableStateOf("") }
+    var errorMessage by rememberSaveable { mutableStateOf<String?>(null) }
 
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.padding(16.dp)) {
@@ -757,9 +684,9 @@ fun AddEmergencyContactScreen(
                         val trimmedPhone = phone.trim()
 
                         if (trimmedName.isBlank()) {
-                            errorMessage = "no puede estar vacio"
+                            errorMessage = "Nombre no puede estar vacio"
                         } else if (trimmedPhone.isBlank()) {
-                            errorMessage = "no puede estar vacio"
+                            errorMessage = "Telefono no puede estar vacio"
                         } else {
                             onSaveContact(
                                 EmergencyContact(
@@ -771,8 +698,104 @@ fun AddEmergencyContactScreen(
                     },
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("Guardareeewewewewfdgvfd")
+                    Text("Save")
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun DeviceSetupScreen(
+    onBack: () -> Unit
+) {
+    var ssid by rememberSaveable { mutableStateOf("") }
+    var password by rememberSaveable { mutableStateOf("") }
+    var status by rememberSaveable {
+        mutableStateOf("Conectar movil a red wifi: FallDetector-Setup")
+    }
+
+    Surface(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = "Setup",
+                style = MaterialTheme.typography.headlineSmall
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text("1. Enciende el detector de caidas.")
+            Text("2. Creara su propia red wifi:")
+            Text("   FallDetector-Setup")
+            Text("3. Conectarse a esa red wifi.")
+            Text("4. Poner credenciales de la red wifi de tu casa.")
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = ssid,
+                onValueChange = { ssid = it },
+                label = { Text("wifi SSID") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text("wifi password") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = {
+                    if (ssid.isBlank()) {
+                        status = "Escribe el SSID de la wifi"
+                        return@Button
+                    }
+
+                    status = "Comprobando setup del dispositivo..."
+
+                    ProvisioningClient.checkSetupDevice(
+                        onSuccess = {
+                            status = "Dispositivo encontrado. Enviando credenciales..."
+
+                            ProvisioningClient.provisionWifi(
+                                ssid = ssid.trim(),
+                                password = password,
+                                onSuccess = {
+                                    status =
+                                        "Exito. Arduino esta rebooting. Reconectarse a su red wifi de casa."
+                                },
+                                onError = { error ->
+                                    status = error
+                                }
+                            )
+                        },
+                        onError = { error ->
+                            status = error
+                        }
+                    )
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Enviar wifi credenciales")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(status)
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Button(
+                onClick = onBack,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Back")
             }
         }
     }
