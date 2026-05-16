@@ -8,6 +8,7 @@
 #include <Adafruit_BNO055.h>
 #include <utility/imumaths.h>
 
+
 enum DeviceMode {
   MODE_SETUP,
   MODE_NORMAL
@@ -70,6 +71,15 @@ bool eventCapturing = false;
 uint32_t eventId = 0;
 uint32_t triggerTimestamp = 0;
 unsigned long lastEventSentAt = 0;
+
+const int BOOST_KEY_PIN = A7;
+unsigned long lastKeepAlive = 0;
+
+void pulseBoostKey() {
+  digitalWrite(BOOST_KEY_PIN, HIGH);
+  delay(150);
+  digitalWrite(BOOST_KEY_PIN, LOW);
+}
 
 void sendMessage(const String& type, const String& message) {
   String json = "{\"type\":\"" + type + "\",\"message\":\"" + message + "\"}";
@@ -385,6 +395,14 @@ void runFallDetection() {
 }
 
 void setup() {
+  // Tema de mantenerlo encendido
+  pinMode(BOOST_KEY_PIN, OUTPUT);
+  digitalWrite(BOOST_KEY_PIN, LOW);
+
+  delay(1000);
+  pulseBoostKey();
+  // todo esto
+
   Serial.begin(115200);
 
   if (!bno.begin()) {
@@ -415,5 +433,11 @@ void loop() {
     }
 
     runFallDetection();
+
+    // lo de mantenerlo encendido
+    if (millis() - lastKeepAlive > 15000) {
+    lastKeepAlive = millis();
+    pulseBoostKey();
+  }
   }
 }
