@@ -26,6 +26,7 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 import org.json.JSONObject
 import android.util.Log
+import android.location.Location
 
 class FallDetectionService : Service() {
 
@@ -334,18 +335,67 @@ class FallDetectionService : Service() {
         broadcastLog("Preparando acciones de emergencia")
 
         val contacts = EmergencyContactStorage.load(this)
+
         broadcastLog("Loaded ${contacts.size} emergency contacts")
+
+        contacts.forEachIndexed { index, contact ->
+            broadcastLog("Contacto $index: Nombre='${contact.name}', Tel='${contact.phone}'")
+        }
 
         if (contacts.isEmpty()) {
             broadcastLog("Sin contactos")
             return
         }
 
-        sendEmergencySms(contacts)
-        callFirstContact(contacts)
+        val locationPermissionGranted = EmergencyLocationProvider.hasLocationPermission(this)
+        broadcastLog("Loc permission granted: $locationPermissionGranted")
+
+        broadcastLog("Missing Loc permission")
+
+        EmergencyLocationProvider.getEmergencyLocation(this) { location ->
+            if (location != null) {
+                broadcastLog(
+                    "Localizacion: lat=${location.latitude}, lon=${location.longitude}, accuracy=${location.accuracy}"
+                )
+            } else {
+                broadcastLog("Loc no disponible")
+            }
+
+            val emergencyMessage = buildEmergencySmsMessage(location)
+
+            sendEmergencySms(
+                contacts = contacts,
+                message = emergencyMessage
+            )
+
+            callFirstContact(contacts)
+        }
     }
 
-    private fun sendEmergencySms(contacts: List<EmergencyContact>) {
+    private fun buildEmergencySmsMessage(location: android.location.Location?): String {
+        val baseMessage =
+            "Caida detectada!! Mensaje automatico de la app Fall Detector."
+
+        if (location == null) {
+            return "$baseMessage\n\nUbicacion no disponible."
+        }
+
+        val mapsLink = EmergencyLocationProvider.buildMapsLink(location)
+
+        val accuracyText =
+            if (location.hasAccuracy()) {
+                "\nPrecision aproximada: ±${location.accuracy.toInt()} m"
+            } else {
+                ""
+            }
+
+        return "$baseMessage\n\nUbicacion aproximada:\n$mapsLink$accuracyText"
+    }
+
+    private fun sendEmergencySms(
+        contacts: List<EmergencyContact>,
+        message: String
+    ) {
         val hasPermission =
             ContextCompat.checkSelfPermission(this, Manifest.permission.SEND_SMS) ==
                     PackageManager.PERMISSION_GRANTED
@@ -357,29 +407,31 @@ class FallDetectionService : Service() {
             return
         }
 
-        val message =
-            "Caida detectada!! Mensaje automatico de la app Fall Detector!! AYUDAAA!!"
-
         try {
             val smsManager = SmsManager.getDefault()
 
             contacts.forEach { contact ->
-                val phoneNumber = normalizePhoneNumber(contact.phone)
+                val messageParts = smsManager.divideMessage(message)
 
-                if (phoneNumber.isBlank()) {
-                    broadcastLog("SMS skipped para ${contact.name}: numeo invalido")
-                    return@forEach
+                if (messageParts.size > 1) {
+                    smsManager.sendMultipartTextMessage(
+                        contact.phone,
+                        null,
+                        messageParts,
+                        null,
+                        null
+                    )
+                } else {
+                    smsManager.sendTextMessage(
+                        contact.phone,
+                        null,
+                        message,
+                        null,
+                        null
+                    )
                 }
 
-                smsManager.sendTextMessage(
-                    phoneNumber,
-                    null,
-                    message,
-                    null,
-                    null
-                )
-
-                broadcastLog("SMS enviado a ${contact.name} : $phoneNumber")
+                broadcastLog("SMS enviado a: ${contact.name}")
             }
 
         } catch (e: Exception) {

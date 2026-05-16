@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
     private var hasSmsPermission by mutableStateOf(false)
     private var hasCallPermission by mutableStateOf(false)
     private var hasNotificationPermission by mutableStateOf(false)
+    private var hasLocationPermission by mutableStateOf(false)
 
     private var logReceiver: BroadcastReceiver? = null
     private var fallReceiver: BroadcastReceiver? = null
@@ -127,6 +128,7 @@ class MainActivity : ComponentActivity() {
                 hasSmsPermission = hasSmsPermission,
                 hasCallPermission = hasCallPermission,
                 hasNotificationPermission = hasNotificationPermission,
+                hasLocationPermission = hasLocationPermission,
                 onRequestPermissions = {
                     requestPermissions()
                 },
@@ -160,7 +162,9 @@ class MainActivity : ComponentActivity() {
             arrayOf(
                 Manifest.permission.SEND_SMS,
                 Manifest.permission.CALL_PHONE,
-                Manifest.permission.POST_NOTIFICATIONS
+                Manifest.permission.POST_NOTIFICATIONS,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
             )
         )
     }
@@ -176,6 +180,12 @@ class MainActivity : ComponentActivity() {
 
         hasNotificationPermission =
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+                    PackageManager.PERMISSION_GRANTED
+
+        hasLocationPermission =
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+                    PackageManager.PERMISSION_GRANTED ||
+                    ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
                     PackageManager.PERMISSION_GRANTED
     }
 
@@ -303,6 +313,7 @@ fun FallDetectorApp(
     hasSmsPermission: Boolean,
     hasCallPermission: Boolean,
     hasNotificationPermission: Boolean,
+    hasLocationPermission: Boolean,
     onRequestPermissions: () -> Unit,
 
     onConnect: () -> Unit,
@@ -322,6 +333,7 @@ fun FallDetectorApp(
                 hasSmsPermission = hasSmsPermission,
                 hasCallPermission = hasCallPermission,
                 hasNotificationPermission = hasNotificationPermission,
+                hasLocationPermission = hasLocationPermission,
                 onRequestPermissions = onRequestPermissions,
                 onConnect = onConnect,
                 onDisconnect = onDisconnect,
@@ -377,6 +389,7 @@ fun MainScreen(
     hasSmsPermission: Boolean,
     hasCallPermission: Boolean,
     hasNotificationPermission: Boolean,
+    hasLocationPermission: Boolean,
     onRequestPermissions: () -> Unit,
 
     onConnect: () -> Unit,
@@ -417,7 +430,7 @@ fun MainScreen(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                if (!hasSmsPermission || !hasCallPermission || !hasNotificationPermission) {
+                if (!hasSmsPermission || !hasCallPermission || !hasNotificationPermission || !hasLocationPermission) {
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Text(
@@ -428,7 +441,7 @@ fun MainScreen(
                             Spacer(modifier = Modifier.height(4.dp))
 
                             Text(
-                                text = "Se necesitan permisos de llamada, SMS y notificaciones."
+                                text = "Se necesitan permisos de llamada, SMS, GPS y notificaciones."
                             )
 
                             Spacer(modifier = Modifier.height(8.dp))
