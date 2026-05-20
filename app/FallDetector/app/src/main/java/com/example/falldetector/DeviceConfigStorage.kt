@@ -8,16 +8,20 @@ object DeviceConfigStorage {
     private const val KEY_DEVICE_IP = "device_ip"
     private const val KEY_AUTO_CONNECT = "auto_connect"
 
+    private const val DEFAULT_DEVICE_ADDRESS = "fall-detector.local"
+
     fun saveDeviceIp(context: Context, ip: String) {
+        val cleanAddress = ip.trim().ifBlank { DEFAULT_DEVICE_ADDRESS }
+
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString(KEY_DEVICE_IP, ip)
+            .putString(KEY_DEVICE_IP, cleanAddress)
             .apply()
     }
 
     fun loadDeviceIp(context: Context): String {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_DEVICE_IP, "192.168.1.100") ?: "192.168.1.100"
+            .getString(KEY_DEVICE_IP, DEFAULT_DEVICE_ADDRESS) ?: DEFAULT_DEVICE_ADDRESS
     }
 
     fun setAutoConnect(context: Context, enabled: Boolean) {

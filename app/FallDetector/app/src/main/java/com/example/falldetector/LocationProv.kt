@@ -222,7 +222,8 @@ object EmergencyLocationProvider {
             override fun onProviderDisabled(provider: String) {}
 
             @Deprecated("Deprecated in Java")
-            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {
+            }
         }
 
         handler.postDelayed(timeoutRunnable, LOCATION_TIMEOUT_MS)

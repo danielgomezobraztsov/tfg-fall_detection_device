@@ -458,7 +458,8 @@ fun MainScreen(
                 OutlinedTextField(
                     value = ipAddress,
                     onValueChange = onIpAddressChange,
-                    label = { Text("Arduino IP Address") },
+                    label = { Text("Arduino hostname or IP") },
+                    supportingText = { Text("Default: fall-detector.local") },
                     modifier = Modifier.fillMaxWidth()
                 )
 

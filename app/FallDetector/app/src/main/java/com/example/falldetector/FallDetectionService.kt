@@ -27,6 +27,10 @@ import okio.ByteString
 import org.json.JSONObject
 import android.util.Log
 import android.location.Location
+import android.content.Context
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 
 class FallDetectionService : Service() {
 
@@ -36,6 +40,11 @@ class FallDetectionService : Service() {
         const val ACTION_CANCEL_ALERT = "com.example.falldetector.ACTION_CANCEL_ALERT"
 
         const val EXTRA_IP = "extra_ip"
+        const val DEFAULT_DEVICE_ADDRESS = "fall-detector.local"
+        const val DEFAULT_WEBSOCKET_PORT = 81
+
+        private const val ARDUINO_SERVICE_TYPE = "_fallws._tcp."
+        private const val DISCOVERY_TIMEOUT_MS = 7000L
 
         const val BROADCAST_LOG = "com.example.falldetector.BROADCAST_LOG"
         const val BROADCAST_FALL_ALERT = "com.example.falldetector.BROADCAST_FALL_ALERT"
@@ -61,25 +70,25 @@ class FallDetectionService : Service() {
     private val client = OkHttpClient()
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    private data class ArduinoEndpoint(
+        val url: String,
+        val label: String
+    )
+
     private var webSocket: WebSocket? = null
-    private var currentIp: String? = null
+    private var currentDeviceAddress: String? = null
+
+    private var nsdManager: NsdManager? = null
+    private var discoveryListener: NsdManager.DiscoveryListener? = null
+    private var resolveListener: NsdManager.ResolveListener? = null
+    private var discoveryTimeoutRunnable: Runnable? = null
+    private var resolvingService = false
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     private var connectionState = ConnectionState.DISCONNECTED
     private var reconnectAttempts = 0
     private var userDisconnected = false
 
-    /*
-     * connectionGeneration prevents old WebSocket callbacks from affecting
-     * the current connection.
-     *
-     * Example:
-     * 1. Old socket closes.
-     * 2. New socket is already connected.
-     * 3. Old onClosed() fires late.
-     *
-     * Without this guard, the old callback could schedule a reconnect and
-     * destabilize the new connection.
-     */
     private var connectionGeneration = 0
 
     private var reconnectRunnable: Runnable? = null
@@ -104,14 +113,13 @@ class FallDetectionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_CONNECT -> {
-                val ip = intent.getStringExtra(EXTRA_IP)
+                val deviceAddress = intent.getStringExtra(EXTRA_IP)
+                    ?.trim()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: DEFAULT_DEVICE_ADDRESS
 
-                if (ip.isNullOrBlank()) {
-                    broadcastLog("Cannot connect: IP vacia")
-                } else {
-                    userDisconnected = false
-                    connect(ip)
-                }
+                userDisconnected = false
+                connect(deviceAddress)
             }
 
             ACTION_DISCONNECT -> {
@@ -133,7 +141,9 @@ class FallDetectionService : Service() {
         return START_STICKY
     }
 
-    private fun connect(ip: String) {
+    // version antigua de conn ccon solo IP, aun no la quiero borrar por si acaso
+
+    /*private fun connect(ip: String) {
         if (
             currentIp == ip &&
             (connectionState == ConnectionState.CONNECTED ||
@@ -216,6 +226,387 @@ class FallDetectionService : Service() {
                 }
             }
         })
+    }*/
+
+    private fun connect(deviceAddress: String) {
+        val requestedAddress = deviceAddress.trim().ifBlank { DEFAULT_DEVICE_ADDRESS }
+
+        if (
+            currentDeviceAddress == requestedAddress &&
+            (connectionState == ConnectionState.CONNECTED ||
+                    connectionState == ConnectionState.CONNECTING ||
+                    connectionState == ConnectionState.RECONNECTING)
+        ) {
+            broadcastLog("Ya conectado/buscando $requestedAddress. Se ignora.")
+            return
+        }
+
+        cancelScheduledReconnect()
+        stopArduinoDiscovery()
+
+        currentDeviceAddress = requestedAddress
+        connectionState = ConnectionState.CONNECTING
+        connectionGeneration++
+
+        val myGeneration = connectionGeneration
+        val directEndpoint = buildWebSocketEndpoint(requestedAddress)
+
+        broadcastLog("Connecting to Arduino using $requestedAddress")
+        updateNotification(buildNormalNotification("Connecting to Arduino: $requestedAddress"))
+
+        webSocket?.close(1000, "Se remplaza la conn")
+        webSocket = null
+
+        if (shouldUseMdnsDiscovery(requestedAddress)) {
+            discoverArduinoThenConnect(myGeneration, directEndpoint)
+        } else {
+            openWebSocket(directEndpoint, myGeneration)
+        }
+    }
+
+    private fun shouldUseMdnsDiscovery(deviceAddress: String): Boolean {
+        val normalized = deviceAddress
+            .trim()
+            .removePrefix("ws://")
+            .removePrefix("wss://")
+            .removeSuffix("/")
+            .substringBefore(":")
+            .lowercase()
+
+        return normalized == DEFAULT_DEVICE_ADDRESS.lowercase() ||
+                normalized.endsWith(".local") ||
+                normalized == "fall-detector"
+    }
+
+    private fun buildWebSocketEndpoint(deviceAddress: String): ArduinoEndpoint {
+        val trimmed = deviceAddress.trim().ifBlank { DEFAULT_DEVICE_ADDRESS }
+
+        if (
+            trimmed.startsWith("ws://", ignoreCase = true) ||
+            trimmed.startsWith("wss://", ignoreCase = true)
+        ) {
+            val url = if (trimmed.endsWith("/")) trimmed else "$trimmed/"
+            return ArduinoEndpoint(
+                url = url,
+                label = url
+            )
+        }
+
+        val withoutScheme = trimmed
+            .removePrefix("http://")
+            .removePrefix("https://")
+            .removeSuffix("/")
+
+        val hostAndPort = when {
+            withoutScheme.startsWith("[") && withoutScheme.contains("]:") -> {
+                withoutScheme
+            }
+
+            withoutScheme.startsWith("[") -> {
+                "$withoutScheme:$DEFAULT_WEBSOCKET_PORT"
+            }
+
+            withoutScheme.count { it == ':' } == 0 -> {
+                "$withoutScheme:$DEFAULT_WEBSOCKET_PORT"
+            }
+
+            withoutScheme.count { it == ':' } == 1 -> {
+                withoutScheme
+            }
+
+            else -> {
+                "[$withoutScheme]:$DEFAULT_WEBSOCKET_PORT"
+            }
+        }
+
+        return ArduinoEndpoint(
+            url = "ws://$hostAndPort/",
+            label = hostAndPort
+        )
+    }
+
+    private fun discoverArduinoThenConnect(
+        myGeneration: Int,
+        fallbackEndpoint: ArduinoEndpoint
+    ) {
+        val manager = getSystemService(Context.NSD_SERVICE) as NsdManager
+        nsdManager = manager
+        resolvingService = false
+
+        acquireMulticastLock()
+
+        broadcastLog("Searching for Arduino mDNS service $ARDUINO_SERVICE_TYPE")
+        updateNotification(buildNormalNotification("Searching for Arduino on local network..."))
+
+        discoveryTimeoutRunnable = Runnable {
+            if (myGeneration != connectionGeneration || userDisconnected) return@Runnable
+
+            broadcastLog("mDNS search timed out. Trying ${fallbackEndpoint.url}")
+            stopArduinoDiscovery()
+            openWebSocket(fallbackEndpoint, myGeneration)
+        }.also { timeout ->
+            mainHandler.postDelayed(timeout, DISCOVERY_TIMEOUT_MS)
+        }
+
+        discoveryListener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(regType: String) {
+                mainHandler.post {
+                    if (myGeneration == connectionGeneration) {
+                        broadcastLog("mDNS discovery started: $regType")
+                    }
+                }
+            }
+
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                mainHandler.post {
+                    if (myGeneration != connectionGeneration || userDisconnected) return@post
+
+                    val serviceTypeMatches = serviceInfo.serviceType
+                        .trimEnd('.')
+                        .equals(ARDUINO_SERVICE_TYPE.trimEnd('.'), ignoreCase = true)
+
+                    if (!serviceTypeMatches || resolvingService) return@post
+
+                    resolvingService = true
+                    broadcastLog("Found ${serviceInfo.serviceName}; resolving address...")
+
+                    val listener = object : NsdManager.ResolveListener {
+                        override fun onResolveFailed(
+                            serviceInfo: NsdServiceInfo,
+                            errorCode: Int
+                        ) {
+                            mainHandler.post {
+                                if (myGeneration != connectionGeneration) return@post
+
+                                resolvingService = false
+                                broadcastLog("mDNS resolve failed: $errorCode")
+                            }
+                        }
+
+                        override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+                            mainHandler.post {
+                                if (myGeneration != connectionGeneration || userDisconnected) {
+                                    return@post
+                                }
+
+                                val endpoint = endpointFromResolvedService(serviceInfo)
+
+                                broadcastLog(
+                                    "mDNS resolved ${serviceInfo.serviceName}: ${endpoint.label}"
+                                )
+
+                                stopArduinoDiscovery()
+                                openWebSocket(endpoint, myGeneration)
+                            }
+                        }
+                    }
+
+                    resolveListener = listener
+
+                    try {
+                        manager.resolveService(serviceInfo, listener)
+                    } catch (e: Exception) {
+                        resolvingService = false
+                        broadcastLog("mDNS resolve start failed: ${e.message}")
+                    }
+                }
+            }
+
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                mainHandler.post {
+                    if (myGeneration == connectionGeneration) {
+                        broadcastLog("mDNS service lost: ${serviceInfo.serviceName}")
+                    }
+                }
+            }
+
+            override fun onDiscoveryStopped(serviceType: String) {
+                // Cleanup is handled by stopArduinoDiscovery().
+            }
+
+            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
+                mainHandler.post {
+                    if (myGeneration != connectionGeneration || userDisconnected) return@post
+
+                    broadcastLog(
+                        "mDNS discovery failed: $errorCode. Trying ${fallbackEndpoint.url}"
+                    )
+
+                    stopArduinoDiscovery()
+                    openWebSocket(fallbackEndpoint, myGeneration)
+                }
+            }
+
+            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
+                mainHandler.post {
+                    broadcastLog("mDNS stop failed: $errorCode")
+                }
+            }
+        }
+
+        try {
+            manager.discoverServices(
+                ARDUINO_SERVICE_TYPE,
+                NsdManager.PROTOCOL_DNS_SD,
+                discoveryListener ?: return
+            )
+        } catch (e: Exception) {
+            broadcastLog(
+                "mDNS discovery start failed: ${e.message}. Trying ${fallbackEndpoint.url}"
+            )
+
+            stopArduinoDiscovery()
+            openWebSocket(fallbackEndpoint, myGeneration)
+        }
+    }
+
+    private fun endpointFromResolvedService(serviceInfo: NsdServiceInfo): ArduinoEndpoint {
+        val rawHost = serviceInfo.host?.hostAddress
+            ?: serviceInfo.host?.hostName
+            ?: DEFAULT_DEVICE_ADDRESS
+
+        val hostForUrl =
+            if (rawHost.contains(":") && !rawHost.startsWith("[")) {
+                "[$rawHost]"
+            } else {
+                rawHost
+            }
+
+        val port =
+            if (serviceInfo.port > 0) {
+                serviceInfo.port
+            } else {
+                DEFAULT_WEBSOCKET_PORT
+            }
+
+        return ArduinoEndpoint(
+            url = "ws://$hostForUrl:$port/",
+            label = "$rawHost:$port"
+        )
+    }
+
+    private fun openWebSocket(endpoint: ArduinoEndpoint, myGeneration: Int) {
+        if (myGeneration != connectionGeneration || userDisconnected) return
+
+        val request = try {
+            Request.Builder()
+                .url(endpoint.url)
+                .build()
+        } catch (e: Exception) {
+            broadcastLog("Invalid Arduino WebSocket URL '${endpoint.url}': ${e.message}")
+            connectionState = ConnectionState.DISCONNECTED
+            scheduleReconnect()
+            return
+        }
+
+        broadcastLog("Opening WebSocket ${endpoint.url}")
+        updateNotification(buildNormalNotification("Connecting to Arduino: ${endpoint.label}"))
+
+        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                mainHandler.post {
+                    if (myGeneration != connectionGeneration) return@post
+
+                    connectionState = ConnectionState.CONNECTED
+                    reconnectAttempts = 0
+
+                    broadcastLog("Connected to Arduino: ${endpoint.label}")
+                    updateNotification(
+                        buildNormalNotification("Connected to Arduino: ${endpoint.label}")
+                    )
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                mainHandler.post {
+                    if (myGeneration != connectionGeneration) return@post
+                    handleEsp32Message(text)
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                mainHandler.post {
+                    if (myGeneration != connectionGeneration) return@post
+                    broadcastLog("Msg binario")
+                }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                mainHandler.post {
+                    if (myGeneration != connectionGeneration) return@post
+
+                    connectionState = ConnectionState.DISCONNECTED
+                    broadcastLog("Disconnected: $reason")
+
+                    if (!userDisconnected) {
+                        scheduleReconnect()
+                    }
+                }
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                mainHandler.post {
+                    if (myGeneration != connectionGeneration) return@post
+
+                    connectionState = ConnectionState.DISCONNECTED
+                    broadcastLog("Error de conn: ${t.message}")
+
+                    if (!userDisconnected) {
+                        scheduleReconnect()
+                    }
+                }
+            }
+        })
+    }
+
+    private fun acquireMulticastLock() {
+        if (multicastLock?.isHeld == true) return
+
+        try {
+            val wifiManager =
+                applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+
+            multicastLock = wifiManager.createMulticastLock("FallDetectorMdnsLock").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (e: Exception) {
+            broadcastLog("Could not acquire multicast lock: ${e.message}")
+        }
+    }
+
+    private fun releaseMulticastLock() {
+        try {
+            multicastLock?.let { lock ->
+                if (lock.isHeld) {
+                    lock.release()
+                }
+            }
+        } catch (_: Exception) {
+            // Ignore cleanup errors.
+        } finally {
+            multicastLock = null
+        }
+    }
+
+    private fun stopArduinoDiscovery() {
+        discoveryTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        discoveryTimeoutRunnable = null
+
+        discoveryListener?.let { listener ->
+            try {
+                nsdManager?.stopServiceDiscovery(listener)
+            } catch (_: Exception) {
+                // Discovery may already be stopped. Safe to ignore.
+            }
+        }
+
+        discoveryListener = null
+        resolveListener = null
+        resolvingService = false
+
+        releaseMulticastLock()
     }
 
     private fun handleEsp32Message(text: String) {
@@ -440,9 +831,7 @@ class FallDetectionService : Service() {
     }
 
     private fun callFirstContact(contacts: List<EmergencyContact>) {
-        val hasPermission =
-            ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) ==
-                    PackageManager.PERMISSION_GRANTED
+        val hasPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
 
         broadcastLog("Call permission granted: $hasPermission")
 
@@ -507,7 +896,7 @@ class FallDetectionService : Service() {
     }
 
     private fun scheduleReconnect() {
-        val ip = currentIp ?: return
+        val deviceAddress = currentDeviceAddress ?: return
 
         if (userDisconnected) return
 
@@ -522,9 +911,9 @@ class FallDetectionService : Service() {
         updateNotification(buildNormalNotification("Conn lost. Reconectando..."))
 
         reconnectRunnable = Runnable {
-            if (!userDisconnected && currentIp == ip) {
+            if (!userDisconnected && currentDeviceAddress == deviceAddress) {
                 connectionState = ConnectionState.DISCONNECTED
-                connect(ip)
+                connect(deviceAddress)
             }
         }
 
@@ -541,6 +930,7 @@ class FallDetectionService : Service() {
 
     private fun disconnect() {
         cancelScheduledReconnect()
+        stopArduinoDiscovery()
 
         countdownTimer?.cancel()
         countdownTimer = null
@@ -679,6 +1069,7 @@ class FallDetectionService : Service() {
 
     override fun onDestroy() {
         cancelScheduledReconnect()
+        stopArduinoDiscovery()
 
         webSocket?.close(1000, "Service destroyed")
         webSocket = null
