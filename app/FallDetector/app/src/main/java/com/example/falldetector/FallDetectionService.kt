@@ -31,6 +31,12 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 
 class FallDetectionService : Service() {
 
@@ -58,6 +64,9 @@ class FallDetectionService : Service() {
         private const val NOTIFICATION_ID = 1001
 
         private const val ALERT_COUNTDOWN_SECONDS = 15
+
+        private const val ALERT_BEEP_INTERVAL_MS = 1000L
+        private const val ALERT_BEEP_DURATION_MS = 250
     }
 
     private enum class ConnectionState {
@@ -96,6 +105,10 @@ class FallDetectionService : Service() {
     private var countdownTimer: CountDownTimer? = null
     private var alertActive = false
     private var secondsRemaining = ALERT_COUNTDOWN_SECONDS
+
+    private var alertAlarmActive = false
+    private var alertBeepRunnable: Runnable? = null
+    private var alertToneGenerator: ToneGenerator? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -633,6 +646,144 @@ class FallDetectionService : Service() {
         }
     }
 
+    private fun startAlertAlarm() {
+        if (alertAlarmActive) return
+
+        alertAlarmActive = true
+
+        startAlertVibration()
+        startAlertBeeps()
+
+        broadcastLog("Fall alert sound/vibration started")
+    }
+
+    private fun stopAlertAlarm() {
+        if (!alertAlarmActive && alertBeepRunnable == null && alertToneGenerator == null) {
+            stopAlertVibration()
+            return
+        }
+
+        alertAlarmActive = false
+
+        stopAlertVibration()
+        stopAlertBeeps()
+
+        broadcastLog("Fall alert sound/vibration stopped")
+    }
+
+    private fun startAlertVibration() {
+        val vibrator = getAlertVibrator()
+
+        if (vibrator == null) {
+            broadcastLog("Vibrator unavailable")
+            return
+        }
+
+        if (!vibrator.hasVibrator()) {
+            broadcastLog("Device has no vibrator")
+            return
+        }
+
+        val pattern = longArrayOf(
+            0L,    // start immediately
+            500L,  // vibrate
+            300L,  // pause
+            500L,  // vibrate
+            700L   // longer pause before repeating
+        )
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val effect = VibrationEffect.createWaveform(pattern, 0)
+                vibrator.vibrate(effect)
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(pattern, 0)
+            }
+        } catch (e: Exception) {
+            broadcastLog("Vibration error: ${e.message}")
+        }
+    }
+
+    private fun stopAlertVibration() {
+        try {
+            getAlertVibrator()?.cancel()
+        } catch (e: Exception) {
+            broadcastLog("Vibration stop error: ${e.message}")
+        }
+    }
+
+    private fun getAlertVibrator(): Vibrator? {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(VibratorManager::class.java)
+                vibratorManager?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Vibrator::class.java)
+            }
+        } catch (e: Exception) {
+            broadcastLog("Vibrator service error: ${e.message}")
+            null
+        }
+    }
+
+    private fun startAlertBeeps() {
+        stopAlertBeeps()
+
+        alertToneGenerator = try {
+            ToneGenerator(AudioManager.STREAM_ALARM, 100)
+        } catch (e: Exception) {
+            broadcastLog("ToneGenerator init error: ${e.message}")
+            null
+        }
+
+        if (alertToneGenerator == null) {
+            return
+        }
+
+        alertBeepRunnable = object : Runnable {
+            override fun run() {
+                if (!alertAlarmActive) return
+
+                try {
+                    alertToneGenerator?.startTone(
+                        ToneGenerator.TONE_PROP_BEEP,
+                        ALERT_BEEP_DURATION_MS
+                    )
+                } catch (e: Exception) {
+                    broadcastLog("Beep error: ${e.message}")
+                }
+
+                mainHandler.postDelayed(this, ALERT_BEEP_INTERVAL_MS)
+            }
+        }
+
+        mainHandler.post(alertBeepRunnable!!)
+    }
+
+    private fun stopAlertBeeps() {
+        alertBeepRunnable?.let { runnable ->
+            mainHandler.removeCallbacks(runnable)
+        }
+
+        alertBeepRunnable = null
+
+        try {
+            alertToneGenerator?.stopTone()
+        } catch (_: Exception) {
+            // Safe to ignore cleanup errors.
+        }
+
+        try {
+            alertToneGenerator?.release()
+        } catch (_: Exception) {
+            // Safe to ignore cleanup errors.
+        }
+
+        alertToneGenerator = null
+    }
+
     private fun startFallAlertCountdown() {
         if (alertActive) {
             broadcastLog("Fall alert ya activa. Ignoramdo duplicado.")
@@ -645,6 +796,8 @@ class FallDetectionService : Service() {
         broadcastLog("Fall detected. Empieza el countdown.")
         broadcastFallAlert()
         broadcastCountdown(secondsRemaining)
+
+        startAlertAlarm()
 
         updateNotification(
             buildAlertNotification("Fall detected. Acciones de emergencia en $secondsRemaining s.")
@@ -689,6 +842,8 @@ class FallDetectionService : Service() {
 
     private fun cancelFallAlert() {
         if (!alertActive) {
+            stopAlertAlarm()
+
             broadcastLog("Se ha tocado el boton de falsa alarma sin que haya accion de caida.")
             updateNotification(
                 buildNormalNotification(
@@ -704,6 +859,8 @@ class FallDetectionService : Service() {
 
         countdownTimer?.cancel()
         countdownTimer = null
+
+        stopAlertAlarm()
 
         alertActive = false
         secondsRemaining = ALERT_COUNTDOWN_SECONDS
@@ -723,6 +880,8 @@ class FallDetectionService : Service() {
     }
 
     private fun executeEmergencyActions() {
+        stopAlertAlarm()
+
         broadcastLog("Preparando acciones de emergencia")
 
         val contacts = EmergencyContactStorage.load(this)
@@ -934,6 +1093,9 @@ class FallDetectionService : Service() {
 
         countdownTimer?.cancel()
         countdownTimer = null
+
+        stopAlertAlarm()
+
         alertActive = false
 
         connectionGeneration++
@@ -1048,6 +1210,8 @@ class FallDetectionService : Service() {
             .setContentIntent(openPendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setOnlyAlertOnce(true)
             .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
                 "False alarm",
@@ -1076,6 +1240,8 @@ class FallDetectionService : Service() {
 
         countdownTimer?.cancel()
         countdownTimer = null
+
+        stopAlertAlarm()
 
         client.dispatcher.executorService.shutdown()
 
