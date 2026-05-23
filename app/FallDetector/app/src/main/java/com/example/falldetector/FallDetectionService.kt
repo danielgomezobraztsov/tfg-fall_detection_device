@@ -534,6 +534,7 @@ class FallDetectionService : Service() {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 mainHandler.post {
                     if (myGeneration != connectionGeneration) return@post
+                    ArduinoDataLogger.logIncomingMessage(this@FallDetectionService, text)
                     handleEsp32Message(text)
                 }
             }
@@ -685,11 +686,11 @@ class FallDetectionService : Service() {
         }
 
         val pattern = longArrayOf(
-            0L,    // start immediately
-            500L,  // vibrate
-            300L,  // pause
-            500L,  // vibrate
-            700L   // longer pause before repeating
+            0L,
+            500L,
+            300L,
+            500L,
+            700L
         )
 
         try {
@@ -778,7 +779,6 @@ class FallDetectionService : Service() {
         try {
             alertToneGenerator?.release()
         } catch (_: Exception) {
-            // Safe to ignore cleanup errors.
         }
 
         alertToneGenerator = null
@@ -796,6 +796,12 @@ class FallDetectionService : Service() {
         broadcastLog("Fall detected. Empieza el countdown.")
         broadcastFallAlert()
         broadcastCountdown(secondsRemaining)
+
+        ArduinoDataLogger.logAppEvent(
+            this,
+            event = "fall_alert_started",
+            detail = "countdown_seconds=$ALERT_COUNTDOWN_SECONDS"
+        )
 
         startAlertAlarm()
 
@@ -866,6 +872,13 @@ class FallDetectionService : Service() {
         secondsRemaining = ALERT_COUNTDOWN_SECONDS
 
         broadcastLog("Fall alert cancelled")
+
+        ArduinoDataLogger.logAppEvent(
+            this,
+            event = "fall_alert_cancelled",
+            detail = "user_pressed_false_alarm"
+        )
+
         broadcastAlertFinished()
 
         updateNotification(
@@ -881,6 +894,12 @@ class FallDetectionService : Service() {
 
     private fun executeEmergencyActions() {
         stopAlertAlarm()
+
+        ArduinoDataLogger.logAppEvent(
+            this,
+            event = "emergency_actions_started",
+            detail = "countdown_finished"
+        )
 
         broadcastLog("Preparando acciones de emergencia")
 
