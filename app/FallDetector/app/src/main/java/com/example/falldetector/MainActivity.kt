@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.startForegroundService
+import androidx.compose.ui.platform.LocalContext
 
 enum class AppScreen {
     Main,
@@ -426,6 +427,17 @@ fun MainScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Emergency Contacts (${contacts.size})")
+                }
+
+                val context = LocalContext.current
+
+                Button(
+                    onClick = {
+                        ArduinoDataLogger.shareLogFiles(context)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Compartir logs csv")
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))

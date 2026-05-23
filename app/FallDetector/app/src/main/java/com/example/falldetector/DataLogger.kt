@@ -11,6 +11,9 @@ import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
 import java.util.concurrent.Executors
+import android.content.Intent
+import android.widget.Toast
+import androidx.core.content.FileProvider
 
 object ArduinoDataLogger {
 
@@ -390,5 +393,34 @@ object ArduinoDataLogger {
         val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US)
         formatter.timeZone = TimeZone.getDefault()
         return formatter.format(Date())
+    }
+
+    fun shareLogFiles(context: Context) {
+        val files = getLogFiles(context)
+
+        if (files.isEmpty()) {
+            Toast.makeText(context, "No log files found yet", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val uris = ArrayList(
+            files.map { file ->
+                FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    file
+                )
+            }
+        )
+
+        val shareIntent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = "text/*"
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+
+        context.startActivity(
+            Intent.createChooser(shareIntent, "Share fall detector logs")
+        )
     }
 }
