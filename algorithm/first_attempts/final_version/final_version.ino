@@ -455,118 +455,45 @@ void clearWifiCredentials() {
   preferences.end();
 }
 
-int loadWifiCredentials(WifiCredential creds[], int maxCreds) {
-  preferences.begin("wifi", true);
-
-  int savedCount = preferences.getInt("count", 0);
-
-  if (savedCount < 0) {
-    savedCount = 0;
-  }
-
-  if (savedCount > maxCreds) {
-    savedCount = maxCreds;
-  }
-
+int parseProvisionedCredentials(WifiCredential creds[], int maxCreds) {
   int outCount = 0;
 
-  for (int i = 0; i < savedCount && outCount < maxCreds; i++) {
-    String ssidKey = "s" + String(i);
-    String passKey = "p" + String(i);
+  int requestedCount = setupServer.arg("count").toInt();
 
-    String ssid = preferences.getString(ssidKey.c_str(), "");
-    String password = preferences.getString(passKey.c_str(), "");
+  if (requestedCount > 0) {
+    for (int i = 0; i < requestedCount && outCount < maxCreds; i++) {
+      String ssidArg = "ssid" + String(i);
+      String passwordArg = "password" + String(i);
 
-    ssid.trim();
+      String ssid = setupServer.arg(ssidArg);
+      String password = setupServer.arg(passwordArg);
 
-    if (ssid.length() > 0) {
+      ssid.trim();
+
+      if (ssid.length() == 0) {
+        continue;
+      }
+
       creds[outCount].ssid = ssid;
       creds[outCount].password = password;
       outCount++;
     }
+
+    return outCount;
   }
 
-  preferences.end();
+  String singleSsid = setupServer.arg("ssid");
+  String singlePassword = setupServer.arg("password");
+
+  singleSsid.trim();
+
+  if (singleSsid.length() > 0 && outCount < maxCreds) {
+    creds[outCount].ssid = singleSsid;
+    creds[outCount].password = singlePassword;
+    outCount++;
+  }
 
   return outCount;
-}
-
-int getSavedWifiCredentialCount() {
-  WifiCredential creds[MAX_WIFI_CREDENTIALS];
-  return loadWifiCredentials(creds, MAX_WIFI_CREDENTIALS);
-}
-
-String savedWifiSsidsJson() {
-  WifiCredential creds[MAX_WIFI_CREDENTIALS];
-  int count = loadWifiCredentials(creds, MAX_WIFI_CREDENTIALS);
-
-  String json = "[";
-
-  for (int i = 0; i < count; i++) {
-    if (i > 0) {
-      json += ",";
-    }
-
-    json += "\"";
-    json += jsonEscape(creds[i].ssid);
-    json += "\"";
-  }
-
-  json += "]";
-
-  return json;
-}
-
-void saveWifiCredentials(WifiCredential creds[], int count) {
-  if (count < 0) {
-    count = 0;
-  }
-
-  if (count > MAX_WIFI_CREDENTIALS) {
-    count = MAX_WIFI_CREDENTIALS;
-  }
-
-  preferences.begin("wifi", false);
-  preferences.clear();
-
-  int savedCount = 0;
-
-  for (int i = 0; i < count && savedCount < MAX_WIFI_CREDENTIALS; i++) {
-    String ssid = creds[i].ssid;
-    ssid.trim();
-
-    if (ssid.length() == 0) {
-      continue;
-    }
-
-    String ssidKey = "s" + String(savedCount);
-    String passKey = "p" + String(savedCount);
-
-    preferences.putString(ssidKey.c_str(), ssid);
-    preferences.putString(passKey.c_str(), creds[i].password);
-
-    savedCount++;
-  }
-
-  preferences.putInt("count", savedCount);
-  preferences.end();
-
-  Serial.print("Saved WiFi credential count: ");
-  Serial.println(savedCount);
-}
-
-void saveWifiCredentials(const String& ssid, const String& password) {
-  WifiCredential creds[1];
-  creds[0].ssid = ssid;
-  creds[0].password = password;
-
-  saveWifiCredentials(creds, 1);
-}
-
-void clearWifiCredentials() {
-  preferences.begin("wifi", false);
-  preferences.clear();
-  preferences.end();
 }
 
 void startSetupMode() {
