@@ -399,7 +399,7 @@ object ArduinoDataLogger {
         val files = getLogFiles(context)
 
         if (files.isEmpty()) {
-            Toast.makeText(context, "No log files found yet", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "No logs yet", Toast.LENGTH_SHORT).show()
             return
         }
 

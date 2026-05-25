@@ -735,8 +735,12 @@ fun AddEmergencyContactScreen(
 fun DeviceSetupScreen(
     onBack: () -> Unit
 ) {
-    var ssid by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
+    var homeSsid by rememberSaveable { mutableStateOf("") }
+    var homePassword by rememberSaveable { mutableStateOf("") }
+
+    var hotspotSsid by rememberSaveable { mutableStateOf("") }
+    var hotspotPassword by rememberSaveable { mutableStateOf("") }
+
     var status by rememberSaveable {
         mutableStateOf("Conectar movil a red wifi: FallDetector-Setup")
     }
@@ -752,25 +756,58 @@ fun DeviceSetupScreen(
 
             Text("1. Enciende el detector de caidas.")
             Text("2. Creara su propia red wifi:")
-            Text("   FallDetector-Setup")
+            Text("   FallDetector-Setup (setup12345)")
             Text("3. Conectarse a esa red wifi.")
-            Text("4. Poner credenciales de la red wifi de tu casa.")
+            Text("4. Introduce las redes que quieres guardar.")
+            Text("5. Primera red tiene preferencia.")
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            Text(
+                text = "Red 1: Wifi de casa",
+                style = MaterialTheme.typography.titleMedium
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
             OutlinedTextField(
-                value = ssid,
-                onValueChange = { ssid = it },
-                label = { Text("wifi SSID") },
+                value = homeSsid,
+                onValueChange = { homeSsid = it },
+                label = { Text("SSID wifi casa") },
                 modifier = Modifier.fillMaxWidth()
             )
 
             Spacer(modifier = Modifier.height(8.dp))
 
             OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("wifi password") },
+                value = homePassword,
+                onValueChange = { homePassword = it },
+                label = { Text("Password Wifi casa") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "Red 2: hostpot del movil",
+                style = MaterialTheme.typography.titleMedium
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = hotspotSsid,
+                onValueChange = { hotspotSsid = it },
+                label = { Text("SSID del hostpot del movil") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = hotspotPassword,
+                onValueChange = { hotspotPassword = it },
+                label = { Text("Password del hostpot del movil") },
                 modifier = Modifier.fillMaxWidth()
             )
 
@@ -778,23 +815,35 @@ fun DeviceSetupScreen(
 
             Button(
                 onClick = {
-                    if (ssid.isBlank()) {
-                        status = "Escribe el SSID de la wifi"
+                    val credentials = listOf(
+                        WifiCredentialInput(
+                            ssid = homeSsid,
+                            password = homePassword
+                        ),
+                        WifiCredentialInput(
+                            ssid = hotspotSsid,
+                            password = hotspotPassword
+                        )
+                    ).filter { credential ->
+                        credential.ssid.trim().isNotBlank()
+                    }
+
+                    if (credentials.isEmpty()) {
+                        status = "Escribe al menos una red wifi"
                         return@Button
                     }
 
-                    status = "Comprobando setup del dispositivo..."
+                    status = "Comprobando setup.."
 
                     ProvisioningClient.checkSetupDevice(
                         onSuccess = {
-                            status = "Dispositivo encontrado. Enviando credenciales..."
+                            status = "Encontrado. Enviando ${credentials.size} credsss"
 
                             ProvisioningClient.provisionWifi(
-                                ssid = ssid.trim(),
-                                password = password,
-                                onSuccess = {
+                                credentials = credentials,
+                                onSuccess = { response ->
                                     status =
-                                        "Exito. Arduino esta rebooting. Reconectarse a su red wifi de casa."
+                                        "Redes guardadas. Reiniciando arduino. Res: $response"
                                 },
                                 onError = { error ->
                                     status = error
@@ -808,7 +857,7 @@ fun DeviceSetupScreen(
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Enviar wifi credenciales")
+                Text("Enviar credenciales de las wifi")
             }
 
             Spacer(modifier = Modifier.height(12.dp))

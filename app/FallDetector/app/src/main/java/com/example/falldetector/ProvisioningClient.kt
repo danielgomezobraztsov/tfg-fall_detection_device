@@ -8,6 +8,11 @@ import okhttp3.Request
 import okhttp3.Response
 import java.io.IOException
 
+data class WifiCredentialInput(
+    val ssid: String,
+    val password: String
+)
+
 object ProvisioningClient {
 
     private val client = OkHttpClient()
@@ -41,19 +46,35 @@ object ProvisioningClient {
     }
 
     fun provisionWifi(
-        ssid: String,
-        password: String,
+        credentials: List<WifiCredentialInput>,
         onSuccess: (String) -> Unit,
         onError: (String) -> Unit
     ) {
-        val formBody = FormBody.Builder()
-            .add("ssid", ssid)
-            .add("password", password)
-            .build()
+        val validCredentials = credentials
+            .map { credential ->
+                credential.copy(ssid = credential.ssid.trim())
+            }
+            .filter { credential ->
+                credential.ssid.isNotBlank()
+            }
+            .take(5)
+
+        if (validCredentials.isEmpty()) {
+            onError("Add at least one WiFi network")
+            return
+        }
+
+        val formBuilder = FormBody.Builder()
+            .add("count", validCredentials.size.toString())
+
+        validCredentials.forEachIndexed { index, credential ->
+            formBuilder.add("ssid$index", credential.ssid)
+            formBuilder.add("password$index", credential.password)
+        }
 
         val request = Request.Builder()
             .url("$SETUP_BASE_URL/provision")
-            .post(formBody)
+            .post(formBuilder.build())
             .build()
 
         client.newCall(request).enqueue(object : Callback {
