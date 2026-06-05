@@ -1,0 +1,20 @@
+# Pick And Place List
+# Company=
+# Author=
+# eMail=
+#
+# Project=diagram_circuit_tfg_v2
+# Date=19:51:06
+# CreatedBy=Fritzing 1.0.4.2024-10-07.CD-2088-0-a8c6ef7c
+#
+#
+# Coordinates in mils, always center of component
+# Origin 0/0=Lower left corner of PCB
+# Rotation in degree (0-360, math. pos.)
+#
+RefDes,Description,Package,X,Y,Rotation,Side,Mount
+Description: resistance;capacitance;inductance;voltage;current;power;mpn;mn;
+Arduino Nano ESP32,";;;;;;;;","",1800.22,900.558,0,Top,MANUAL
+S1,";;;;;;;;","THT",1212.38,1629.2,-90,Top,THT
+PowerBoost 500C,";;;;;;;;","",861.239,486.487,0,Top,MANUAL
+BNO055,";;;;;;;;","",515.927,1358.34,0,Top,MANUAL
