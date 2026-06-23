@@ -61,10 +61,18 @@ const unsigned long FALL_CANDIDATE_TIMEOUT_MS = 10000;
 const unsigned long LYING_MESSAGE_PERIOD_MS   = 1000;
 const float STILL_GYRO_THRESHOLD = 20.0f;
 
-float standGx = 0.0f;
-float standGy = 0.0f;
-float standGz = 9.81f;
-bool standingBaselineSet = false;
+enum BodyVerticalAxis { BODY_AXIS_X, BODY_AXIS_Y, BODY_AXIS_Z };
+const BodyVerticalAxis BODY_VERTICAL_AXIS = BODY_AXIS_Y;
+
+const float GRAVITY_VALID_MIN_MS2 = 7.0f;
+const float GRAVITY_VALID_MAX_MS2 = 12.5f;
+const float POSTURE_FILTER_ALPHA  = 0.20f;
+
+float postureAngleFiltered = 0.0f;
+bool postureFilterReady = false;
+
+const size_t BNO055_CALIBRATION_BYTES = 22;
+bool bnoCalibrationSavedThisBoot = false;
 
 bool lyingPostureState = false;
 unsigned long lyingStart = 0;
@@ -85,6 +93,7 @@ struct Sample {
   float ax, ay, az;
   float gx, gy, gz;
   float pitch, roll;
+  float postureAngle;
   float accMag;
   float gyroMag;
   float fallEnergy;
@@ -182,38 +191,51 @@ float angleBetweenDeg(float ax, float ay, float az, float bx, float by, float bz
   return acos(dot) * 180.0f / PI;
 }
 
-void calibrateStandingPosture() {
-  const int samples = 60;
-  float sx = 0.0f;
-  float sy = 0.0f;
-  float sz = 0.0f;
-
-  delay(500);
-
-  for (int i = 0; i < samples; i++) {
-    imu::Vector<3> gravity = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
-    sx += gravity.x();
-    sy += gravity.y();
-    sz += gravity.z();
-    delay(20);
+float selectedBodyVerticalComponent(float gx, float gy, float gz) {
+  switch (BODY_VERTICAL_AXIS) {
+    case BODY_AXIS_X: return gx;
+    case BODY_AXIS_Y: return gy;
+    case BODY_AXIS_Z: return gz;
   }
 
-  standGx = sx / samples;
-  standGy = sy / samples;
-  standGz = sz / samples;
-  standingBaselineSet = true;
-
-  Serial.print("Standing gravity baseline: ");
-  Serial.print(standGx, 3);
-  Serial.print(", ");
-  Serial.print(standGy, 3);
-  Serial.print(", ");
-  Serial.println(standGz, 3);
+  return gy;
 }
 
-bool updateLyingPostureState(float postureAngleDeg) {
-  if (!standingBaselineSet) {
+bool computeMountedPostureAngleDeg(const imu::Vector<3>& gravity, float& angleDeg) {
+  float gx = gravity.x();
+  float gy = gravity.y();
+  float gz = gravity.z();
+
+  float gMag = sqrt(gx * gx + gy * gy + gz * gz);
+
+  if (gMag < GRAVITY_VALID_MIN_MS2 || gMag > GRAVITY_VALID_MAX_MS2) {
     return false;
+  }
+
+  float bodyAxis = selectedBodyVerticalComponent(gx, gy, gz);
+  float cosAngle = fabs(bodyAxis) / gMag;
+  cosAngle = constrain(cosAngle, 0.0f, 1.0f);
+
+  angleDeg = acos(cosAngle) * 180.0f / PI;
+  return true;
+}
+
+float updatePostureFilter(float rawAngleDeg) {
+  if (!postureFilterReady) {
+    postureAngleFiltered = rawAngleDeg;
+    postureFilterReady = true;
+  } else {
+    postureAngleFiltered =
+      (1.0f - POSTURE_FILTER_ALPHA) * postureAngleFiltered +
+      POSTURE_FILTER_ALPHA * rawAngleDeg;
+  }
+
+  return postureAngleFiltered;
+}
+
+bool updateLyingPostureState(float postureAngleDeg, bool postureValid) {
+  if (!postureValid) {
+    return lyingPostureState;
   }
 
   if (!lyingPostureState && postureAngleDeg >= POSTURE_LYING_ENTER_DEG) {
@@ -223,6 +245,44 @@ bool updateLyingPostureState(float postureAngleDeg) {
   }
 
   return lyingPostureState;
+}
+
+void restoreBnoCalibration() {
+  preferences.begin("bno", true);
+  size_t len = preferences.getBytesLength("offsets");
+
+  if (len == BNO055_CALIBRATION_BYTES) {
+    uint8_t data[BNO055_CALIBRATION_BYTES];
+    preferences.getBytes("offsets", data, BNO055_CALIBRATION_BYTES);
+    preferences.end();
+
+    bno.setSensorOffsets(data);
+    Serial.println("Restored saved BNO055 calibration offsets");
+  } else {
+    preferences.end();
+    Serial.println("No saved BNO055 calibration offsets found");
+  }
+}
+
+void maybeSaveBnoCalibration(uint8_t calSys, uint8_t calGyro, uint8_t calAccel, uint8_t calMag) {
+  if (bnoCalibrationSavedThisBoot) {
+    return;
+  }
+
+  if (calSys != 3 || calGyro != 3 || calAccel != 3 || calMag != 3) {
+    return;
+  }
+
+  uint8_t data[BNO055_CALIBRATION_BYTES];
+
+  if (bno.getSensorOffsets(data)) {
+    preferences.begin("bno", false);
+    preferences.putBytes("offsets", data, BNO055_CALIBRATION_BYTES);
+    preferences.end();
+
+    bnoCalibrationSavedThisBoot = true;
+    Serial.println("Saved BNO055 calibration offsets");
+  }
 }
 
 void resetFallCandidate() {
@@ -677,12 +737,11 @@ void runFallDetection() {
     totalEnergy += energyBuffer[i];
   }
 
-  float postureAngle = angleBetweenDeg(
-    gravity.x(), gravity.y(), gravity.z(),
-    standGx, standGy, standGz
-  );
+  float rawPostureAngle = 0.0f;
+  bool postureValid = computeMountedPostureAngleDeg(gravity, rawPostureAngle);
+  float postureAngle = postureValid ? updatePostureFilter(rawPostureAngle) : postureAngleFiltered;
 
-  bool lyingDown = updateLyingPostureState(postureAngle);
+  bool lyingDown = updateLyingPostureState(postureAngle, postureValid);
   bool inactive = (accMag < INACTIVE_THRESHOLD) && (gyroMag < STILL_GYRO_THRESHOLD);
   bool impactDetected = (totalEnergy > ENERGY_THRESHOLD) && (gyroMag > GYRO_THRESHOLD);
 
@@ -696,6 +755,7 @@ void runFallDetection() {
   s.gz = gyro.z();
   s.pitch = euler.y();
   s.roll = euler.z();
+  s.postureAngle = postureAngle;
   s.accMag = accMag;
   s.gyroMag = gyroMag;
   s.fallEnergy = fallEnergy;
@@ -761,12 +821,15 @@ void runFallDetection() {
 
   uint8_t calSys, calGyro, calAccel, calMag;
   bno.getCalibration(&calSys, &calGyro, &calAccel, &calMag);
+  maybeSaveBnoCalibration(calSys, calGyro, calAccel, calMag);
 
   String debugMsg =
     "acc=" + String(accMag, 2) +
     " gyro=" + String(gyroMag, 2) +
     " energy=" + String(totalEnergy, 1) +
     " posture=" + String(postureAngle, 1) +
+    " postureValid=" + String(postureValid ? 1 : 0) +
+    " grav=" + String(gravity.x(), 2) + "," + String(gravity.y(), 2) + "," + String(gravity.z(), 2) +
     " lying=" + String(lyingDown ? 1 : 0) +
     " inactive=" + String(inactive ? 1 : 0) +
     " cal=" + String(calSys) + "/" + String(calGyro) + "/" + String(calAccel) + "/" + String(calMag);
@@ -794,8 +857,7 @@ void setup() {
 
   delay(1000);
   bno.setExtCrystalUse(true);
-
-  calibrateStandingPosture();
+  restoreBnoCalibration();
 
   if (connectToSavedWifi()) {
     startNormalMode();

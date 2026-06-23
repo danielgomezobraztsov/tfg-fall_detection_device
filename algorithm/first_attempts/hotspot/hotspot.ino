@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WebSocketsServer_Generic.h>
+#include <ESPmDNS.h>
 #include <Preferences.h>
 
 #include <Wire.h>
@@ -19,10 +20,17 @@ DeviceMode deviceMode = MODE_SETUP;
 const char* SETUP_AP_SSID = "FallDetector-Setup";
 const char* SETUP_AP_PASSWORD = "setup12345";
 
+const char* DEVICE_HOSTNAME = "fall-detector";
+const char* DEVICE_SERVICE_NAME = "FallDetector";
+const char* MDNS_WEBSOCKET_SERVICE = "fallws";
+const uint16_t WEBSOCKET_PORT = 81;
+
+bool mdnsStarted = false;
+
 Preferences preferences;
 
 WebServer setupServer(80);
-WebSocketsServer webSocket = WebSocketsServer(81);
+WebSocketsServer webSocket = WebSocketsServer(WEBSOCKET_PORT);
 
 Adafruit_BNO055 bno = Adafruit_BNO055(55);
 
@@ -38,6 +46,22 @@ int energyIndex = 0;
 
 bool possibleFall = false;
 unsigned long fallTime = 0;
+
+const float POSTURE_LYING_ENTER_DEG = 65.0f;
+const float POSTURE_LYING_EXIT_DEG  = 45.0f;
+const unsigned long FALL_CANDIDATE_TIMEOUT_MS = 10000;
+const unsigned long LYING_MESSAGE_PERIOD_MS   = 1000;
+const float STILL_GYRO_THRESHOLD = 20.0f;
+
+float standGx = 0.0f;
+float standGy = 0.0f;
+float standGz = 9.81f;
+bool standingBaselineSet = false;
+
+bool lyingPostureState = false;
+unsigned long lyingStart = 0;
+unsigned long inactiveStart = 0;
+unsigned long lastLyingMsgAt = 0;
 
 const int SAMPLE_PERIOD_MS = 40;
 const int SAMPLE_RATE_HZ   = 1000 / SAMPLE_PERIOD_MS; // de momento 25hz ya vere si lo toco
@@ -72,6 +96,7 @@ uint32_t eventId = 0;
 uint32_t triggerTimestamp = 0;
 unsigned long lastEventSentAt = 0;
 
+//para que se manteng encendido por el step up booster que es caca
 const int BOOST_KEY_PIN = A7;
 unsigned long lastKeepAlive = 0;
 
@@ -87,8 +112,117 @@ void sendMessage(const String& type, const String& message) {
   Serial.println(json);
 }
 
+String websocketMdnsUrl() {
+  return "ws://" + String(DEVICE_HOSTNAME) + ".local:" + String(WEBSOCKET_PORT) + "/";
+}
+
+void stopMdnsService() {
+  if (mdnsStarted) {
+    MDNS.end();
+    mdnsStarted = false;
+    Serial.println("mDNS responder stopped");
+  }
+}
+
+bool startMdnsService() {
+  stopMdnsService();
+
+  if (!MDNS.begin(DEVICE_HOSTNAME)) {
+    Serial.println("Error setting up mDNS responder");
+    return false;
+  }
+
+  mdnsStarted = true;
+
+  MDNS.addService(MDNS_WEBSOCKET_SERVICE, "tcp", WEBSOCKET_PORT);
+  MDNS.addServiceTxt(MDNS_WEBSOCKET_SERVICE, "tcp", "device", DEVICE_SERVICE_NAME);
+  MDNS.addServiceTxt(MDNS_WEBSOCKET_SERVICE, "tcp", "path", "/");
+  MDNS.addServiceTxt(MDNS_WEBSOCKET_SERVICE, "tcp", "protocol", "websocket");
+
+  Serial.println("mDNS responder started");
+  Serial.print("mDNS hostname: ");
+  Serial.print(DEVICE_HOSTNAME);
+  Serial.println(".local");
+  Serial.print("mDNS service: _");
+  Serial.print(MDNS_WEBSOCKET_SERVICE);
+  Serial.println("._tcp.local");
+  Serial.print("WebSocket URL: ");
+  Serial.println(websocketMdnsUrl());
+
+  return true;
+}
+
 bool cooldownActive() {
+  if (lastEventSentAt == 0) {
+    return false;
+  }
+
   return (millis() - lastEventSentAt) < EVENT_COOLDOWN_MS;
+}
+
+float angleBetweenDeg(float ax, float ay, float az, float bx, float by, float bz) {
+  float amag = sqrt(ax * ax + ay * ay + az * az);
+  float bmag = sqrt(bx * bx + by * by + bz * bz);
+
+  if (amag < 0.01f || bmag < 0.01f) {
+    return 0.0f;
+  }
+
+  float dot = (ax * bx + ay * by + az * bz) / (amag * bmag);
+  dot = constrain(dot, -1.0f, 1.0f);
+
+  return acos(dot) * 180.0f / PI;
+}
+
+void calibrateStandingPosture() {
+  const int samples = 60;
+  float sx = 0.0f;
+  float sy = 0.0f;
+  float sz = 0.0f;
+
+  delay(500);
+
+  for (int i = 0; i < samples; i++) {
+    imu::Vector<3> gravity = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
+    sx += gravity.x();
+    sy += gravity.y();
+    sz += gravity.z();
+    delay(20);
+  }
+
+  standGx = sx / samples;
+  standGy = sy / samples;
+  standGz = sz / samples;
+  standingBaselineSet = true;
+
+  Serial.print("Standing gravity baseline: ");
+  Serial.print(standGx, 3);
+  Serial.print(", ");
+  Serial.print(standGy, 3);
+  Serial.print(", ");
+  Serial.println(standGz, 3);
+}
+
+bool updateLyingPostureState(float postureAngleDeg) {
+  if (!standingBaselineSet) {
+    return false;
+  }
+
+  if (!lyingPostureState && postureAngleDeg >= POSTURE_LYING_ENTER_DEG) {
+    lyingPostureState = true;
+  } else if (lyingPostureState && postureAngleDeg <= POSTURE_LYING_EXIT_DEG) {
+    lyingPostureState = false;
+  }
+
+  return lyingPostureState;
+}
+
+void resetFallCandidate() {
+  possibleFall = false;
+  fallTime = 0;
+  lyingStart = 0;
+  inactiveStart = 0;
+  lyingPostureState = false;
 }
 
 void addToRingBuffer(const Sample& s) {
@@ -220,6 +354,8 @@ void startSetupMode() {
     json += "\"type\":\"status\",";
     json += "\"mode\":\"setup\",";
     json += "\"deviceName\":\"FallDetector\",";
+    json += "\"mdnsHost\":\"" + String(DEVICE_HOSTNAME) + ".local\",";
+    json += "\"mdnsService\":\"_" + String(MDNS_WEBSOCKET_SERVICE) + "._tcp.local\",";
     json += "\"apIp\":\"" + WiFi.softAPIP().toString() + "\"";
     json += "}";
 
@@ -262,6 +398,8 @@ bool connectToSavedWifi() {
     return false;
   }
 
+  WiFi.setHostname(DEVICE_HOSTNAME);
+
   WiFi.mode(WIFI_STA);
   WiFi.begin(savedSsid.c_str(), savedPassword.c_str());
 
@@ -292,18 +430,28 @@ void startNormalMode() {
   deviceMode = MODE_NORMAL;
 
   webSocket.begin();
+  bool mdnsOk = startMdnsService();
 
   sendMessage("status", "ESP32 started");
   sendMessage("status", "IP: " + WiFi.localIP().toString());
+  if (mdnsOk) {
+    sendMessage("status", "DNS: " + websocketMdnsUrl());
+    sendMessage("status", "Service: _" + String(MDNS_WEBSOCKET_SERVICE) + "._tcp.local");
+  } else {
+    sendMessage("status", "mDNS failed; use IP: " + WiFi.localIP().toString());
+  }
   sendMessage("status", "Boot complete");
 }
 
 void runFallDetection() {
   webSocket.loop();
 
-  imu::Vector<3> linear = bno.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
-  imu::Vector<3> gyro   = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
-  imu::Vector<3> euler  = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
+  imu::Vector<3> linear  = bno.getVector(Adafruit_BNO055::VECTOR_LINEARACCEL);
+  imu::Vector<3> gyro    = bno.getVector(Adafruit_BNO055::VECTOR_GYROSCOPE);
+  imu::Vector<3> euler   = bno.getVector(Adafruit_BNO055::VECTOR_EULER);
+  imu::Vector<3> gravity = bno.getVector(Adafruit_BNO055::VECTOR_GRAVITY);
+
+  uint32_t nowMs = millis();
 
   float accMag = sqrt(
     linear.x() * linear.x() +
@@ -327,9 +475,14 @@ void runFallDetection() {
     totalEnergy += energyBuffer[i];
   }
 
-  bool lyingDown = abs(euler.y()) > 60 || abs(euler.z()) > 60;
+  float postureAngle = angleBetweenDeg(
+    gravity.x(), gravity.y(), gravity.z(),
+    standGx, standGy, standGz
+  );
 
-  uint32_t nowMs = millis();
+  bool lyingDown = updateLyingPostureState(postureAngle);
+  bool inactive = (accMag < INACTIVE_THRESHOLD) && (gyroMag < STILL_GYRO_THRESHOLD);
+  bool impactDetected = (totalEnergy > ENERGY_THRESHOLD) && (gyroMag > GYRO_THRESHOLD);
 
   Sample s;
   s.t = nowMs;
@@ -346,36 +499,55 @@ void runFallDetection() {
   s.fallEnergy = fallEnergy;
   s.totalEnergy = totalEnergy;
 
-  addToRingBuffer(s);
-
-  if (totalEnergy > ENERGY_THRESHOLD && gyroMag > GYRO_THRESHOLD) {
-    if (!possibleFall) {
-      sendMessage("event", "Energy spike detected");
-    }
-
+  if (impactDetected && !possibleFall) {
     possibleFall = true;
-    fallTime = millis();
+    fallTime = nowMs;
+    lyingStart = 0;
+    inactiveStart = 0;
+
+    sendMessage("event", "Energy spike detected");
 
     if (!eventTriggered && !cooldownActive()) {
       startEventCapture(nowMs);
     }
   }
 
-  if (possibleFall) {
-    if (lyingDown) {
-      sendMessage("event", "Lying posture detected");
-    }
 
-    if (lyingDown && accMag < INACTIVE_THRESHOLD) {
-      if (millis() - fallTime > inactivityTime) {
-        sendMessage("fall", "FALL DETECTED");
-        possibleFall = false;
+  if (possibleFall) {
+    if (nowMs - fallTime > FALL_CANDIDATE_TIMEOUT_MS) {
+      resetFallCandidate();
+      sendMessage("event", "Fall candidate expired");
+    } else {
+      if (lyingDown) {
+        if (lyingStart == 0) {
+          lyingStart = nowMs;
+        }
+
+        if (nowMs - lastLyingMsgAt > LYING_MESSAGE_PERIOD_MS) {
+          sendMessage("event", "Lying posture detected");
+          lastLyingMsgAt = nowMs;
+        }
+      } else {
+        lyingStart = 0;
+      }
+
+      if (lyingDown && inactive) {
+        if (inactiveStart == 0) {
+          inactiveStart = nowMs;
+        }
+
+        if (nowMs - inactiveStart >= inactivityTime) {
+          sendMessage("fall", "FALL DETECTED");
+          resetFallCandidate();
+        }
+      } else {
+        inactiveStart = 0;
       }
     }
   }
 
   if (eventCapturing) {
-    if (nowMs >= triggerTimestamp && eventCount < EVENT_SAMPLES) {
+    if (eventCount < EVENT_SAMPLES) {
       eventBuffer[eventCount++] = s;
     }
 
@@ -383,11 +555,19 @@ void runFallDetection() {
       finishEventCapture();
     }
   }
+  addToRingBuffer(s);
+
+  uint8_t calSys, calGyro, calAccel, calMag;
+  bno.getCalibration(&calSys, &calGyro, &calAccel, &calMag);
 
   String debugMsg =
     "acc=" + String(accMag, 2) +
     " gyro=" + String(gyroMag, 2) +
-    " energy=" + String(totalEnergy, 1);
+    " energy=" + String(totalEnergy, 1) +
+    " posture=" + String(postureAngle, 1) +
+    " lying=" + String(lyingDown ? 1 : 0) +
+    " inactive=" + String(inactive ? 1 : 0) +
+    " cal=" + String(calSys) + "/" + String(calGyro) + "/" + String(calAccel) + "/" + String(calMag);
 
   sendMessage("debug", debugMsg);
 
@@ -413,6 +593,8 @@ void setup() {
   delay(1000);
   bno.setExtCrystalUse(true);
 
+  calibrateStandingPosture();
+
   if (connectToSavedWifi()) {
     startNormalMode();
   } else {
@@ -428,6 +610,7 @@ void loop() {
   if (deviceMode == MODE_NORMAL) {
     if (WiFi.status() != WL_CONNECTED) {
       Serial.println("Wifi se ha perdido, modo hotspot otr vez");
+      stopMdnsService();
       delay(1000);
       ESP.restart();
     }
