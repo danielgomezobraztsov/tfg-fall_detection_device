@@ -39,8 +39,8 @@ object EmergencyContactStorage {
 
         contacts.forEach { contact ->
             val item = JSONObject()
-            item.put("nombre", contact.name)
-            item.put("numero", contact.phone)
+            item.put("name", contact.name)
+            item.put("phone", contact.phone)
             array.put(item)
         }
 
